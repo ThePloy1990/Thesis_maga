@@ -165,6 +165,7 @@ async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка callback-запросов из inline-клавиатуры"""
+    global portfolio_results
     query = update.callback_query
     await query.answer()
     data = query.data
@@ -219,7 +220,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             }
             with open(PORTFOLIO_RESULTS_FILE, 'w', encoding='utf-8') as f:
                 json.dump(new_results, f, ensure_ascii=False, indent=2)
-            global portfolio_results
             portfolio_results = new_results
             lines = [
                 f"🏦 Ожидаемая доходность: {result['expected_return']*100:.2f}%",
@@ -236,7 +236,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text = f"❌ Ошибка при оптимизации: {e}"
         await query.edit_message_text(text)
     elif data == "menu_reports":
-        await query.edit_message_text("📄 Формирую отчёт... (заглушка)")
+        link = get_dashboard_link()
+        await query.edit_message_text(
+            f"📄 Отчёт доступен по ссылке:\n{link}"
+        )
     elif data == "menu_notifications":
         await query.edit_message_text("🔔 Управление уведомлениями... (заглушка)")
     elif data == "menu_settings":

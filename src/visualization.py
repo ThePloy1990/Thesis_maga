@@ -65,5 +65,5 @@ def create_pdf_report(results: Dict, perf_path: str, alloc_path: str, output_pat
 
 
 def get_dashboard_link() -> str:
-    """Возвращает ссылку на веб-дашборд (заглушка)"""
-    return 'https://example.com/dashboard' 
+    """Возвращает ссылку на локальный Streamlit дашборд"""
+    return 'http://localhost:8501'
