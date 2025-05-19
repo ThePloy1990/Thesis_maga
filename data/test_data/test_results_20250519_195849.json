@@ -1,0 +1,9 @@
+{
+  "timestamp": "2025-05-19T19:58:49.297623",
+  "results": {
+    "stock_collector": true,
+    "crypto_collector": false,
+    "news_collector": false,
+    "sentiment_analyzer": false
+  }
+}

@@ -2,8 +2,8 @@ from fastapi import FastAPI, Depends, HTTPException
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from pydantic import BaseModel
-from models import SessionLocal, User
-from celery_app import send_newsletter_task
+from src.models import SessionLocal, User
+from src.celery_app import send_newsletter_task
 
 app = FastAPI(title="Admin Panel API")
 

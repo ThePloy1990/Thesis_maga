@@ -1,0 +1,29 @@
+[
+  {
+    "title": "Компания Apple представила новый iPhone",
+    "description": "На презентации были показаны новые модели смартфонов",
+    "url": "https://example.com/apple-news",
+    "publishedAt": "2023-09-15T12:00:00Z",
+    "source": {
+      "name": "Tech News"
+    }
+  },
+  {
+    "title": "Акции Tesla выросли на 5% после отчета",
+    "description": "Компания отчиталась о рекордной квартальной прибыли",
+    "url": "https://example.com/tesla-news",
+    "publishedAt": "2023-09-14T15:30:00Z",
+    "source": {
+      "name": "Financial Times"
+    }
+  },
+  {
+    "title": "ФРС снизила ключевую ставку",
+    "description": "Американский регулятор снизил ставку на 0.25%",
+    "url": "https://example.com/fed-news",
+    "publishedAt": "2023-09-13T18:45:00Z",
+    "source": {
+      "name": "Bloomberg"
+    }
+  }
+]

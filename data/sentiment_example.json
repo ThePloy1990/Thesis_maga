@@ -1,0 +1,24 @@
+[
+  {
+    "title": "Компания Apple представила новый iPhone",
+    "description": "На презентации были показаны новые модели смартфонов",
+    "sentiment": {
+      "positive": 0.2,
+      "negative": 0.2,
+      "neutral": 0.6
+    },
+    "sentiment_label": "neutral",
+    "sentiment_score": 0.6
+  },
+  {
+    "title": "Акции Tesla выросли на 5% после отчета",
+    "description": "Компания отчиталась о рекордной квартальной прибыли",
+    "sentiment": {
+      "positive": 0.8,
+      "negative": 0.1,
+      "neutral": 0.1
+    },
+    "sentiment_label": "positive",
+    "sentiment_score": 0.8
+  }
+]
