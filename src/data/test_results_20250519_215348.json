@@ -1,0 +1,10 @@
+{
+  "timestamp": "2025-05-19T21:53:48.258788",
+  "results": {
+    "stock_collector": true,
+    "crypto_collector": true,
+    "news_collector": false,
+    "sentiment_analyzer": true
+  },
+  "mock_data_used": false
+}

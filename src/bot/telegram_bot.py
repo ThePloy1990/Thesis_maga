@@ -8,16 +8,16 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 import openai
 import sqlite3
 import sys
-sys.path.insert(0, os.path.dirname(__file__))
-from portfolio_optimizer import (
+sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+from core.portfolio_optimizer import (
     load_price_data,
     calculate_returns,
     optimize_portfolio,
     calculate_var_cvar,
     backtest_strategy,
 )
-from llm_agents import forecast_tool
-from visualization import (
+from core.llm_agents import forecast_tool
+from core.visualization import (
     create_performance_chart,
     create_allocation_pie,
     create_reports_csv,
@@ -308,6 +308,26 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     logger.info("Бот запущен...")
     app.run_polling()
+
+
+def setup_bot():
+    """
+    Функция для инициализации и настройки бота, которая может быть импортирована другими модулями.
+    Возвращает настроенный экземпляр бота, готовый к запуску.
+    """
+    if not TELEGRAM_TOKEN or not OPENAI_API_KEY:
+        logger.error("Не заданы переменные окружения TELEGRAM_BOT_TOKEN или OPENAI_API_KEY.")
+        return None
+
+    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("register", register))
+    app.add_handler(CommandHandler("forecast", forecast))
+    app.add_handler(CommandHandler("menu", menu))
+    app.add_handler(CallbackQueryHandler(button_handler))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    logger.info("Бот настроен и готов к запуску")
+    return app
 
 
 if __name__ == "__main__":

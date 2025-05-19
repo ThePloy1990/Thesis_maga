@@ -6,7 +6,7 @@
 - Модели данных
 """
 
-from src.services.models import User, SessionLocal, Base
+from services.models import User, SessionLocal, Base
 
 __all__ = [
     'User',

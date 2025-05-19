@@ -1,0 +1,8 @@
+{
+  "timestamp": "2025-05-19T22:12:51.076185",
+  "success": false,
+  "details": {
+    "error": "ConnectionError",
+    "details": "HTTPConnectionPool(host='localhost', port=8000): Max retries exceeded with url: /newsletter/ (Caused by NewConnectionError('<urllib3.connection.HTTPConnection object at 0x000001FCA8703E00>: Failed to establish a new connection: [WinError 10061] Подключение не установлено, т.к. конечный компьютер отверг запрос на подключение'))"
+  }
+}

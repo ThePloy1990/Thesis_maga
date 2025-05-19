@@ -5,7 +5,7 @@
 - Анализ сентимента
 """
 
-from src.data_collection.data_collectors import (
+from data_collection.data_collectors import (
     StockDataCollector,
     CryptoDataCollector,
     NewsCollector,

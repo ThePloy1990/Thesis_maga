@@ -18,7 +18,8 @@ from datetime import datetime
 project_root = Path(__file__).parent.parent
 sys.path.append(str(project_root))
 
-from src.data_collectors import (
+# Правильный импорт из модуля, когда запускаем из папки src
+from data_collection import (
     StockDataCollector, 
     CryptoDataCollector, 
     NewsCollector, 
@@ -37,7 +38,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Флаги для определения, какие тесты запускать
-USE_MOCK_DATA = True  # Использовать заглушки вместо реальных API
+USE_MOCK_DATA = False  # Использовать настоящие данные вместо заглушек
 RUN_STOCK_TEST = True
 RUN_CRYPTO_TEST = True
 RUN_NEWS_TEST = True
@@ -80,23 +81,6 @@ def test_crypto_collector():
         # Проверка доступности CCXT
         if collector.exchange is None:
             logger.warning("CCXT не установлен или не удалось инициализировать биржу")
-            if USE_MOCK_DATA:
-                logger.info("Используем заглушку для данных криптовалют")
-                # Создаем фиктивные данные для имитации успешного ответа
-                mock_file = os.path.join("data", "crypto_mock_data.json")
-                os.makedirs("data", exist_ok=True)
-                with open(mock_file, "w", encoding="utf-8") as f:
-                    mock_data = {
-                        "timestamp": ["2023-01-01", "2023-01-02", "2023-01-03"],
-                        "open": [20000, 21000, 22000],
-                        "high": [21000, 22000, 23000],
-                        "low": [19500, 20500, 21500],
-                        "close": [20500, 21500, 22500],
-                        "volume": [100, 200, 300]
-                    }
-                    json.dump(mock_data, f, ensure_ascii=False, indent=2)
-                logger.info(f"Заглушка для данных криптовалют сохранена в {mock_file}")
-                return True
             return False
         
         # Получение исторических данных
@@ -111,9 +95,6 @@ def test_crypto_collector():
         return True
     except Exception as e:
         logger.error(f"Ошибка при тестировании CryptoDataCollector: {e}")
-        if USE_MOCK_DATA:
-            logger.info("Используем заглушку для данных криптовалют из-за ошибки")
-            return True
         return False
 
 
@@ -127,40 +108,6 @@ def test_news_collector():
         # Проверка доступности API ключа
         if not collector.api_key or collector.api_key == "ВАШ_КЛЮЧ_API_NEWSAPI":
             logger.warning("API ключ NewsAPI не найден или не валидный")
-            if USE_MOCK_DATA:
-                logger.info("Используем заглушку для новостей")
-                # Создаем фиктивные данные новостей
-                mock_news = [
-                    {
-                        "title": "Компания Apple представила новый iPhone",
-                        "description": "На презентации были показаны новые модели смартфонов",
-                        "url": "https://example.com/apple-news",
-                        "publishedAt": "2023-09-15T12:00:00Z",
-                        "source": {"name": "Tech News"}
-                    },
-                    {
-                        "title": "Акции Tesla выросли на 5% после отчета",
-                        "description": "Компания отчиталась о рекордной квартальной прибыли",
-                        "url": "https://example.com/tesla-news",
-                        "publishedAt": "2023-09-14T15:30:00Z",
-                        "source": {"name": "Financial Times"}
-                    },
-                    {
-                        "title": "ФРС снизила ключевую ставку",
-                        "description": "Американский регулятор снизил ставку на 0.25%",
-                        "url": "https://example.com/fed-news",
-                        "publishedAt": "2023-09-13T18:45:00Z",
-                        "source": {"name": "Bloomberg"}
-                    }
-                ]
-                
-                # Сохранение примера новостей
-                example_file = os.path.join("data", "news_example_mock.json")
-                os.makedirs("data", exist_ok=True)
-                with open(example_file, "w", encoding="utf-8") as f:
-                    json.dump(mock_news, f, ensure_ascii=False, indent=2)
-                logger.info(f"Пример новостей сохранен в {example_file}")
-                return True
             return False
         
         # Получение новостей о компании
@@ -186,9 +133,6 @@ def test_news_collector():
         return True
     except Exception as e:
         logger.error(f"Ошибка при тестировании NewsCollector: {e}")
-        if USE_MOCK_DATA:
-            logger.info("Используем заглушку для новостей из-за ошибки")
-            return True
         return False
 
 
@@ -197,11 +141,11 @@ def test_sentiment_analyzer():
     logger.info("=== Тестирование SentimentAnalyzer ===")
     
     try:
-        # Создаем анализатор с заглушкой, если используем мок данные
+        # Создаем анализатор без заглушки
         analyzer = SentimentAnalyzer(use_mock_data=USE_MOCK_DATA)
         
-        # Проверим, загрузилась ли модель (не требуется, если используем заглушку)
-        if not analyzer.model and not USE_MOCK_DATA:
+        # Проверим, загрузилась ли модель
+        if not analyzer.model:
             logger.warning("Модель FinBERT не загружена")
             return False
         
@@ -222,8 +166,8 @@ def test_sentiment_analyzer():
         # Тест анализа новостей
         logger.info("Тест анализа сентимента новостей")
         
-        # Создаем фиктивные данные новостей
-        mock_news = [
+        # Создаем тестовые данные новостей
+        test_news = [
             {
                 "title": "Компания Apple представила новый iPhone",
                 "description": "На презентации были показаны новые модели смартфонов"
@@ -235,7 +179,7 @@ def test_sentiment_analyzer():
         ]
         
         # Анализируем их
-        enriched_news = analyzer.analyze_news(mock_news)
+        enriched_news = analyzer.analyze_news(test_news)
         logger.info(f"Проанализировано {len(enriched_news)} новостей")
         
         # Сохраняем результаты

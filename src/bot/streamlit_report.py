@@ -2,12 +2,14 @@ import json
 import glob
 import os
 from pathlib import Path
+import sys
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 import streamlit as st
 import matplotlib.pyplot as plt
 import plotly.graph_objects as go
 
-from portfolio_optimizer import load_price_data, backtest_strategy
+from core.portfolio_optimizer import load_price_data, backtest_strategy
 
 RESULTS_PATH = Path("data/portfolio_results.json")
 
@@ -67,9 +69,13 @@ def main():
     allocation_pie(results['optimal_weights'])
 
 
+def create_report_page():
+    """Создает и отображает отчет Streamlit."""
+    main()
+
+
 if __name__ == "__main__":
     from streamlit.web import cli as stcli
-    import sys
 
     if st._is_running_with_streamlit:
         main()

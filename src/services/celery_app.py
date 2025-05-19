@@ -1,7 +1,8 @@
+import sys
 import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from dotenv import load_dotenv
 from celery import Celery
-from src.services.models import SessionLocal, User
 from telegram import Bot
 import logging
 import asyncio
@@ -10,6 +11,13 @@ import pandas as pd
 from datetime import datetime
 import json
 from celery.schedules import crontab
+
+if __name__ == "__main__":
+    # При запуске как скрипт
+    from services.models import SessionLocal, User
+else:
+    # При импорте как модуль
+    from .models import SessionLocal, User
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -32,22 +40,22 @@ celery.conf.update(
 # Настройка расписания задач
 celery.conf.beat_schedule = {
     'collect-stock-data-daily': {
-        'task': 'src.services.celery_app.collect_stock_data_task',
+        'task': 'services.celery_app.collect_stock_data_task',
         'schedule': crontab(hour=0, minute=0),  # Каждый день в полночь
         'args': (['^SPY', 'AAPL', 'MSFT', 'GOOGL', 'AMZN'], '1d', '1d'),
     },
     'collect-crypto-data-hourly': {
-        'task': 'src.services.celery_app.collect_crypto_data_task',
+        'task': 'services.celery_app.collect_crypto_data_task',
         'schedule': crontab(minute=0),  # Каждый час
         'args': (['BTC/USDT', 'ETH/USDT'], '1h'),
     },
     'collect-news-30min': {
-        'task': 'src.services.celery_app.collect_news_task',
+        'task': 'services.celery_app.collect_news_task',
         'schedule': crontab(minute='*/30'),  # Каждые 30 минут
         'args': (['business', 'technology'], 'us'),
     },
     'analyze-market-daily': {
-        'task': 'src.services.celery_app.analyze_market_task',
+        'task': 'services.celery_app.analyze_market_task',
         'schedule': crontab(hour=1, minute=0),  # Каждый день в 1:00
     },
 }
@@ -118,7 +126,7 @@ def send_newsletter_task(message: str):
 @celery.task
 def collect_stock_data_task(tickers, period="1d", interval="1d"):
     """Задача для сбора данных о ценах акций"""
-    from src.data_collection import StockDataCollector
+    from data_collection import StockDataCollector
     
     logger.info(f"Запуск сбора данных о ценах акций: {tickers}")
     collector = StockDataCollector()
@@ -139,7 +147,7 @@ def collect_stock_data_task(tickers, period="1d", interval="1d"):
 @celery.task
 def collect_crypto_data_task(symbols, timeframe="1d"):
     """Задача для сбора данных о криптовалютах"""
-    from src.data_collection import CryptoDataCollector
+    from data_collection import CryptoDataCollector
     
     logger.info(f"Запуск сбора данных о криптовалютах: {symbols}")
     collector = CryptoDataCollector()
@@ -164,7 +172,7 @@ def collect_crypto_data_task(symbols, timeframe="1d"):
 @celery.task
 def collect_news_task(categories, country="us"):
     """Задача для сбора новостей по категориям"""
-    from src.data_collection import NewsCollector
+    from data_collection import NewsCollector
     
     logger.info(f"Запуск сбора новостей по категориям: {categories}")
     collector = NewsCollector()
@@ -189,7 +197,7 @@ def collect_news_task(categories, country="us"):
 @celery.task
 def analyze_sentiment_task(category="business", country="us"):
     """Задача для анализа сентимента новостей"""
-    from src.data_collection import NewsCollector, SentimentAnalyzer
+    from data_collection import NewsCollector, SentimentAnalyzer
     
     logger.info(f"Запуск анализа сентимента новостей категории {category}")
     news_collector = NewsCollector()
@@ -238,7 +246,7 @@ def analyze_market_task():
     
     # Формируем базовый снимок рынка (основные индексы)
     try:
-        from src.data_collection import StockDataCollector
+        from data_collection import StockDataCollector
         collector = StockDataCollector()
         
         # Получаем текущие цены основных индексов

@@ -1,9 +1,20 @@
+import sys
+import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from fastapi import FastAPI, Depends, HTTPException
 from sqlalchemy.orm import Session
-from typing import List, Optional
-from pydantic import BaseModel
-from src.models import SessionLocal, User
-from src.celery_app import send_newsletter_task
+from typing import List, Optional, ClassVar, Dict, Any
+from pydantic import BaseModel, ConfigDict
+
+# Исправляем импорты, чтобы они работали и при прямом запуске
+if __name__ == "__main__":
+    # При запуске как скрипт
+    from services.models import SessionLocal, User
+    from services.celery_app import send_newsletter_task
+else:
+    # При импорте как модуль
+    from .models import SessionLocal, User
+    from .celery_app import send_newsletter_task
 
 app = FastAPI(title="Admin Panel API")
 
@@ -22,9 +33,9 @@ class UserSchema(BaseModel):
     risk_tolerance: Optional[str] = None
     horizon: Optional[str] = None
     goal: Optional[str] = None
-
-    class Config:
-        orm_mode = True
+    
+    # Современный способ конфигурации моделей Pydantic V2
+    model_config = ConfigDict(from_attributes=True)
 
 class NewsletterRequest(BaseModel):
     message: str
@@ -66,4 +77,11 @@ async def get_metrics():
 async def newsletter(req: NewsletterRequest):
     """Запускает фоновую задачу рассылки"""
     send_newsletter_task.delay(req.message)
-    return {"status": "scheduled", "message": req.message} 
+    return {"status": "scheduled", "message": req.message}
+
+# Добавляем код запуска сервера при прямом запуске файла
+if __name__ == "__main__":
+    import uvicorn
+    print("Запуск API сервера на http://localhost:8000")
+    print("Для остановки нажмите Ctrl+C")
+    uvicorn.run(app, host="0.0.0.0", port=8000) 
