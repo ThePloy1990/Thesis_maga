@@ -8,7 +8,14 @@ import openai
 import sqlite3
 import sys
 sys.path.insert(0, os.path.dirname(__file__))
-from portfolio_optimizer import load_price_data, calculate_returns, optimize_portfolio, calculate_var_cvar, backtest_strategy
+from portfolio_optimizer import (
+    load_price_data,
+    calculate_returns,
+    optimize_portfolio,
+    calculate_var_cvar,
+    backtest_strategy,
+)
+from llm_agents import forecast_tool
 from visualization import (
     create_performance_chart,
     create_allocation_pie,
@@ -110,6 +117,21 @@ async def register(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['registration_step'] = 0
     context.user_data['profile'] = {}
     await update.message.reply_text("Давайте создадим ваш профиль.\nКак вас зовут?")
+
+async def forecast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Возвращает прогноз по указанному тикеру"""
+    if not context.args:
+        await update.message.reply_text("Использование: /forecast <тикер> [горизонт]")
+        return
+    ticker = context.args[0]
+    horizon = context.args[1] if len(context.args) > 1 else "1y"
+    try:
+        result = forecast_tool([ticker], horizon)
+        prediction = result.get(ticker)
+        await update.message.reply_text(f"Прогноз для {ticker} ({horizon}): {prediction}")
+    except Exception as e:
+        logger.error("Ошибка в forecast_tool: %s", e)
+        await update.message.reply_text("Не удалось получить прогноз.")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обрабатывает входящие текстовые сообщения и перенаправляет их в LLM"""
@@ -249,6 +271,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "/start - начать бота\n"
             "/register - регистрация\n"
             "/menu - главное меню\n"
+            "/forecast <тикер> [горизонт] - прогноз цены\n"
             "В меню доступны опции управления портфелем."
         )
         await query.edit_message_text(help_text)
@@ -275,6 +298,7 @@ def main():
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("register", register))
+    app.add_handler(CommandHandler("forecast", forecast))
     app.add_handler(CommandHandler("menu", menu))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
