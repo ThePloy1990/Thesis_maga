@@ -14,6 +14,7 @@ from portfolio_optimizer import (
     calculate_returns,
     calculate_var_cvar,
 )
+from forecast import predict_with_catboost
 
 
 @dataclass
@@ -42,9 +43,17 @@ def function_tool(func: Callable[..., Dict]) -> Callable[..., Dict]:
 
 @function_tool
 def forecast_tool(tickers: List[str], horizon: str) -> Dict:
-    """Dummy forecast tool returning zero growth."""
-    # Placeholder: replace with a real forecast model
-    return {ticker: 0.0 for ticker in tickers}
+    """Возвращает прогноз доходности по списку тикеров."""
+
+    results: Dict[str, float | str] = {}
+    for ticker in tickers:
+        try:
+            results[ticker] = predict_with_catboost(ticker)
+        except FileNotFoundError as exc:
+            results[ticker] = f"модель отсутствует: {exc}"
+        except Exception as exc:  # noqa: BLE001
+            results[ticker] = f"ошибка прогноза: {exc}"
+    return results
 
 
 @function_tool
