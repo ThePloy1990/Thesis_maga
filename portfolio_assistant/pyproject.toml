@@ -1,0 +1,38 @@
+[tool.poetry]
+name = "portfolio-assistant"
+version = "0.1.0"
+description = "AI Portfolio Assistant"
+authors = ["Your Name <you@example.com>"]
+readme = "README.md"
+packages = [{include = "src", from = "."}]
+
+[tool.poetry.dependencies]
+python = "^3.10"
+numpy = "*"
+pandas = "*"
+pydantic = "*"
+redis = "*"
+fastapi = "*"
+uvicorn = {extras = ["standard"], version = "*"}
+aiohttp = "*"
+torch = "*"
+pytorch-lightning = "*"
+pyportfolioopt = "*"
+transformers = ">=4.41"
+openai = "*"
+llama-index = "*"
+yfinance = "*"
+ccxt = "*"
+orbit-ml = "*"
+typer = "*"
+loguru = "*"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "*"
+pytest-cov = "*"
+ruff = "*"
+mypy = "*"
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api" 
