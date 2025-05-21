@@ -91,7 +91,7 @@ class MockHfModel(MagicMock):
 def test_sentiment_tool_positive(mock_fetch_news, mock_tokenizer_load, mock_model_load):
     """Тест с позитивными новостями."""
     mock_fetch_news.return_value = MOCK_NEWS_ARTICLES_POSITIVE['articles']
-    
+
     mock_model_instance = MockHfModel()
     # Мокаем вызов модели, чтобы вернуть предопределенные логиты
     # Это самый сложный чась для мока без глубокого понимания входных данных токенизатора
@@ -99,7 +99,7 @@ def test_sentiment_tool_positive(mock_fetch_news, mock_tokenizer_load, mock_mode
     mock_model_instance.return_value = MockHfModelOutput([[2.197, -0.693, -0.693]])
     mock_model_load.return_value = mock_model_instance
     mock_tokenizer_load.return_value = MagicMock() # Простой мок для токенизатора
-    
+
     score = sentiment_tool(ticker="GOODCO", window_days=1)
     assert score > 0.8 # Ожидаем высокий позитивный балл (0.9 - 0.05 = 0.85)
 
@@ -124,7 +124,7 @@ def test_sentiment_tool_mixed_mocked_calc(mock_calc_score, mock_fetch_news):
     """Тест со смешанными новостями, мокая _calculate_sentiment_score."""
     mock_fetch_news.return_value = MOCK_NEWS_ARTICLES_MIXED['articles']
     # Предположим, первый заголовок дает +0.7, второй -0.7. Среднее будет 0.
-    mock_calc_score.return_value = 0.0 
+    mock_calc_score.return_value = 0.0
     score = sentiment_tool(ticker="MIXEDCO", window_days=1)
     assert score == pytest.approx(0.0)
 
@@ -141,7 +141,7 @@ def test_sentiment_tool_newsapi_error(mock_news_client_getter):
     mock_api_instance = MagicMock()
     mock_api_instance.get_everything.return_value = MOCK_NEWSAPI_ERROR
     mock_news_client_getter.return_value = mock_api_instance
-    
+
     score = sentiment_tool(ticker="ERRCO", window_days=1)
     assert score == 0.0
 
@@ -150,7 +150,7 @@ def test_sentiment_tool_newsapi_error(mock_news_client_getter):
 @patch('src.tools.sentiment_tool._fetch_news_from_api')
 def test_sentiment_tool_model_load_error(mock_fetch_news, mock_tokenizer_load, mock_model_load_error):
     """Тест при ошибке загрузки модели."""
-    mock_fetch_news.return_value = MOCK_NEWS_ARTICLES_POSITIVE['articles'] 
+    mock_fetch_news.return_value = MOCK_NEWS_ARTICLES_POSITIVE['articles']
     # mock_tokenizer_load не важен, т.к. загрузка модели упадет раньше
     score = sentiment_tool(ticker="MODELFAIL", window_days=1)
     assert score == 0.0 # Ожидаем 0.0, так как _calculate_sentiment_score вернет 0.0 при ошибке
@@ -160,7 +160,7 @@ def test_sentiment_tool_model_load_error(mock_fetch_news, mock_tokenizer_load, m
 def test_sentiment_caching(mock_calc_score, mock_fetch_news, clear_sentiment_cache_and_prepare_env):
     """Тест кэширования в Redis."""
     mock_fetch_news.return_value = MOCK_NEWS_ARTICLES_POSITIVE['articles']
-    
+
     ticker = "CACHEAAPL"
     window = 2
 
@@ -221,4 +221,4 @@ def test_sentiment_tool_no_newsapi_key(mock_get_newsapi_client):
 # Можно было бы мокнуть redis.Redis().ping() чтобы вызвать исключение
 
 # Дополнительный тест: Проверить, что redis недоступен (сложно без изменения глобальных переменных или DI)
-# Можно было бы мокнуть redis.Redis().ping() чтобы вызвать исключение 
+# Можно было бы мокнуть redis.Redis().ping() чтобы вызвать исключение

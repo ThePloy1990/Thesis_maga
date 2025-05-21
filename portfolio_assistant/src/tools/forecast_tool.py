@@ -60,7 +60,7 @@ def _calculate_features(df: pd.DataFrame, ticker: str) -> Optional[pd.DataFrame]
     df.ta.ema(length=20, append=True, col_names=("EMA_20",))
 
     df.ta.rsi(length=14, append=True, col_names=("RSI_14",))
-    
+
     # Volatility (21-day standard deviation of daily log returns)
     df['VOL_21D'] = log_returns.rolling(window=21).std()
 
@@ -71,7 +71,7 @@ def _calculate_features(df: pd.DataFrame, ticker: str) -> Optional[pd.DataFrame]
         else:
             logger.error(f"Feature column {col} not found after pandas_ta calculation for {ticker}.")
             return None # Or fill with NaN, depending on model robustness
-            
+
     # Ensure all expected columns are present
     for col in FEATURE_COLUMNS:
         if col not in features.columns:
@@ -112,7 +112,7 @@ def forecast_tool(
             mu_ticker = snapshot.mu.get(ticker)
             # Sigma in snapshot is a covariance matrix. We need variance for the ticker.
             sigma_ticker_variance = snapshot.sigma.get(ticker, {}).get(ticker)
-            
+
             if mu_ticker is not None and sigma_ticker_variance is not None:
                 return {
                     "mu": mu_ticker,
@@ -125,7 +125,7 @@ def forecast_tool(
                 # For now, let's fall through to on-demand if ticker not in snapshot.
         else:
             logger.warning(f"Snapshot {snapshot_id} not found. Proceeding with on-demand forecast.")
-    
+
     # On-demand forecast
     logger.info(f"Generating on-demand forecast for {ticker} (lookback: {lookback_days} days)")
     model_path = MODELS_DIR / f"catboost_{ticker}.cbm"
@@ -144,15 +144,15 @@ def forecast_tool(
     # Download data for feature calculation
     end_date = datetime.now(timezone.utc)
     start_date = end_date - timedelta(days=lookback_days + 50) # Extra days for rolling window calculations
-    
+
     try:
         # Append .NS for NSE stocks, or handle other exchange suffixes if needed
         # For simplicity, assuming US market tickers directly usable by yfinance
-        ticker_yf = ticker 
+        ticker_yf = ticker
         # Example: if ticker could be "INFY" for NSE, it should be "INFY.NS"
         # if ticker.upper() in ["RELIANCE", "INFY"]: # Add more as needed
         #    ticker_yf = f"{ticker.upper()}.NS"
-        
+
         data_ohlcv = yf.download(ticker_yf, start=start_date.strftime("%Y-%m-%d"), end=end_date.strftime("%Y-%m-%d"), progress=False)
         if data_ohlcv.empty:
             logger.error(f"No data downloaded from yfinance for {ticker_yf} ({start_date} to {end_date})")
@@ -166,7 +166,7 @@ def forecast_tool(
     if prediction_features_df is None or prediction_features_df.empty:
         logger.error(f"Feature calculation failed for {ticker}.")
         return {"mu": None, "sigma": None, "snapshot_id": None, "error": f"Feature calculation failed for {ticker}"}
-    
+
     # Check for NaNs in features, CatBoost might handle them or might not, depending on training.
     if prediction_features_df.isnull().values.any():
         logger.warning(f"NaNs found in features for {ticker}. Prediction might be unreliable. Features:\n{prediction_features_df}")
@@ -188,7 +188,7 @@ def forecast_tool(
         if risk_data_ohlcv.empty:
             logger.error(f"No risk data for {ticker} from yfinance.")
             return {"mu": mu_hat, "sigma": None, "snapshot_id": None, "error": f"No yfinance risk data for {ticker}"}
-        
+
         daily_log_returns_risk = np.log(risk_data_ohlcv['Adj Close'] / risk_data_ohlcv['Adj Close'].shift(1)).dropna()
         if len(daily_log_returns_risk) < 21:
              logger.warning(f"Not enough risk data points for {ticker} after processing ({len(daily_log_returns_risk)} found)")
@@ -218,7 +218,7 @@ if __name__ == '__main__':
     # Basic test (requires a dummy model and yfinance access)
     # Ensure models/catboost_TEST.cbm exists. Create it with the test script first.
     logging.basicConfig(level=logging.INFO)
-    
+
     # Prerequisite: Run test_forecast_tool.py to create the dummy model first.
     test_model_path = MODELS_DIR / "catboost_TEST.cbm"
     if not test_model_path.exists():
@@ -232,7 +232,7 @@ if __name__ == '__main__':
         try:
             result_on_demand = forecast_tool(ticker="TEST") # Uses models/catboost_TEST.cbm
             logger.info(f"On-demand forecast for TEST: {result_on_demand}")
-            
+
             # Example for a real ticker (if you have a model for it e.g. models/catboost_MSFT.cbm)
             # result_msft = forecast_tool(ticker="MSFT")
             # logger.info(f"On-demand forecast for MSFT: {result_msft}")
@@ -248,4 +248,4 @@ if __name__ == '__main__':
     # logger.info(f"Saved dummy snapshot {snap_id}")
     # result_snapshot = forecast_tool(ticker="TEST", snapshot_id=snap_id)
     # logger.info(f"Snapshot forecast for TEST: {result_snapshot}")
-    # registry.delete_all_snapshots_dangerously() # Clean up 
+    # registry.delete_all_snapshots_dangerously() # Clean up

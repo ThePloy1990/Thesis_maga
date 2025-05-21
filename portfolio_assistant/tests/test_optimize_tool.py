@@ -22,7 +22,7 @@ def test_snapshot_registry() -> SnapshotRegistry:
     if Path(TEST_OPTIMIZE_S3_STUB_PATH).exists():
         shutil.rmtree(TEST_OPTIMIZE_S3_STUB_PATH)
     Path(TEST_OPTIMIZE_S3_STUB_PATH).mkdir(parents=True, exist_ok=True)
-    
+
     registry = SnapshotRegistry(s3_stub_path=TEST_OPTIMIZE_S3_STUB_PATH)
     # Clear Redis keys that this registry might use (based on its default prefix)
     # This is a simplified cleanup for testing; assumes no critical data on test Redis DB 0.
@@ -30,9 +30,9 @@ def test_snapshot_registry() -> SnapshotRegistry:
     keys_to_delete = registry.redis_client.keys(f"{test_snapshot_prefix}optimize_test_snap_*")
     if keys_to_delete:
         registry.redis_client.delete(*keys_to_delete)
-    
+
     yield registry
-    
+
     # Teardown: clean S3 stub and Redis keys again if needed, though isolated by function scope
     if Path(TEST_OPTIMIZE_S3_STUB_PATH).exists():
         shutil.rmtree(TEST_OPTIMIZE_S3_STUB_PATH)
@@ -45,14 +45,14 @@ def dummy_snapshot_id(test_snapshot_registry: SnapshotRegistry) -> str:
     """Creates a dummy snapshot with 3 assets and returns its ID."""
     registry = test_snapshot_registry
     assets = ["ASSET_X", "ASSET_Y", "ASSET_Z"]
-    
+
     # More realistic means and covariance for testing
     mu_data = {
         "ASSET_X": 0.12,
         "ASSET_Y": 0.18,
         "ASSET_Z": 0.09
     }
-    
+
     # Ensure positive definite covariance matrix
     sigma_data_array = np.array([
         [0.050, 0.015, 0.008],  # Var(X), Cov(X,Y), Cov(X,Z)
@@ -67,9 +67,9 @@ def dummy_snapshot_id(test_snapshot_registry: SnapshotRegistry) -> str:
         # For test data, simple adjustment might be enough or ensure data is well-formed.
         logger.warning("Test covariance matrix not positive definite. Adding small epsilon to diagonal.")
         sigma_data_array += np.eye(len(assets)) * 1e-6
-        
+
     sigma_data = pd.DataFrame(sigma_data_array, index=assets, columns=assets).to_dict()
-    
+
     meta = SnapshotMeta(
         id="optimize_test_snap_001", # Fixed ID for predictability in tests
         created_at=datetime.now(timezone.utc),
@@ -113,8 +113,8 @@ def test_optimize_tool_black_litterman(dummy_snapshot_id: str):
     risk_aversion_test = 3.0
 
     result = optimize_tool(
-        snapshot_id=snapshot_id, 
-        method="black_litterman", 
+        snapshot_id=snapshot_id,
+        method="black_litterman",
         risk_aversion=risk_aversion_test,
         max_weight=max_w
     )
@@ -166,4 +166,4 @@ def test_optimize_tool_invalid_max_weight(dummy_snapshot_id: str):
 
 # Note: For Black-Litterman, the quality of results heavily depends on the views (Q),
 # prior (pi), and uncertainties (Omega). The dummy data might produce simplistic or
-# sometimes non-intuitive BL results. Real-world scenarios require careful calibration. 
+# sometimes non-intuitive BL results. Real-world scenarios require careful calibration.
