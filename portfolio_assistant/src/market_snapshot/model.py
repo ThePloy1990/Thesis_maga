@@ -1,7 +1,7 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, List, Optional, Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 
 
 class SnapshotMeta(BaseModel):
@@ -16,38 +16,43 @@ class SnapshotMeta(BaseModel):
         source: Optional source of the snapshot.
         properties: Optional additional properties for the snapshot.
     """
-    snapshot_id: str = Field(validation_alias="id", serialization_alias="id")
-    timestamp: datetime = Field(validation_alias="created_at", serialization_alias="created_at")
-    tickers: List[str] = Field(validation_alias="asset_universe", serialization_alias="asset_universe")
-    description: Optional[str] = None
-    source: Optional[str] = None
-    properties: Optional[Dict[str, Any]] = None
-
-    # ---- Convenience read-only aliases (backwards-compatibility) ----------------
-    @property
-    def id(self) -> str:  # type: ignore
-        """Alias for accessing as meta.id in existing code."""
-        return self.snapshot_id
-
-    @property
-    def created_at(self) -> datetime:  # type: ignore
-        """Alias to timestamp for compatibility."""
-        return self.timestamp
-
-    @property
-    def asset_universe(self) -> List[str]:  # type: ignore
-        """Alias to tickers."""
-        return self.tickers
-
-    @property
-    def horizon_days(self) -> Optional[int]:  # type: ignore
-        """Extract horizon from properties (used in tests)."""
-        if self.properties and "horizon_days" in self.properties:
-            try:
-                return int(self.properties["horizon_days"])
-            except (TypeError, ValueError):
-                return None
-        return None
+    # Основные поля для совместимости с Pydantic 2.x
+    snapshot_id: str = Field(alias="snapshot_id", default="")
+    timestamp: datetime = Field(alias="timestamp", default_factory=lambda: datetime.now(timezone.utc))
+    tickers: List[str] = Field(alias="tickers", default_factory=list)
+    description: Optional[str] = Field(alias="description", default=None)
+    source: Optional[str] = Field(alias="source", default=None)
+    properties: Optional[Dict[str, Any]] = Field(alias="properties", default=None)
+    
+    # Обратная совместимость с предыдущей версией модели
+    id: str = Field(alias="id", default="")
+    created_at: datetime = Field(alias="created_at", default_factory=lambda: datetime.now(timezone.utc))
+    asset_universe: List[str] = Field(alias="asset_universe", default_factory=list)
+    horizon_days: int = Field(default=30)
+    
+    model_config = ConfigDict(
+        populate_by_name=True,
+        validate_assignment=True
+    )
+    
+    def __init__(self, **data):
+        super().__init__(**data)
+        
+        # Синхронизируем алиасы при инициализации
+        if not self.id and "snapshot_id" in data:
+            self.id = data["snapshot_id"]
+        elif not self.snapshot_id and "id" in data:
+            self.snapshot_id = data["id"]
+            
+        if not self.created_at and "timestamp" in data:
+            self.created_at = data["timestamp"]
+        elif not self.timestamp and "created_at" in data:
+            self.timestamp = data["created_at"]
+            
+        if not self.asset_universe and "tickers" in data:
+            self.asset_universe = data["tickers"]
+        elif not self.tickers and "asset_universe" in data:
+            self.tickers = data["asset_universe"]
 
 
 class MarketSnapshot(BaseModel):

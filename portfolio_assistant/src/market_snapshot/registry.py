@@ -105,10 +105,11 @@ class SnapshotRegistry:
                         if "tickers" in meta and "asset_universe" not in meta:
                             meta["asset_universe"] = meta["tickers"]
                         # Проверяем наличие horizon_days
-                        if "horizon_days" not in meta and "properties" in meta and "horizon_days" in meta["properties"]:
-                            meta["horizon_days"] = meta["properties"]["horizon_days"]
-                        elif "horizon_days" not in meta:
-                            meta["horizon_days"] = 30  # Значение по умолчанию, если нет
+                        if "horizon_days" not in meta:
+                            if "properties" in meta and meta["properties"] is not None and "horizon_days" in meta["properties"]:
+                                meta["horizon_days"] = meta["properties"]["horizon_days"]
+                            else:
+                                meta["horizon_days"] = 30  # Значение по умолчанию, если нет
 
                         return MarketSnapshot.model_validate(snapshot_data)
                 except Exception as conversion_error:
@@ -132,10 +133,11 @@ class SnapshotRegistry:
                 if "tickers" in meta and "asset_universe" not in meta:
                     meta["asset_universe"] = meta["tickers"]
                 # Проверяем наличие horizon_days
-                if "horizon_days" not in meta and "properties" in meta and "horizon_days" in meta["properties"]:
-                    meta["horizon_days"] = meta["properties"]["horizon_days"]
-                elif "horizon_days" not in meta:
-                    meta["horizon_days"] = 30  # Значение по умолчанию, если нет
+                if "horizon_days" not in meta:
+                    if "properties" in meta and meta["properties"] is not None and "horizon_days" in meta["properties"]:
+                        meta["horizon_days"] = meta["properties"]["horizon_days"]
+                    else:
+                        meta["horizon_days"] = 30  # Значение по умолчанию, если нет
                 
             try:
                 return MarketSnapshot.model_validate(snapshot_data)
