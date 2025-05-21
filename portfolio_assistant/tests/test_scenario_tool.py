@@ -241,31 +241,6 @@ def test_invalid_adjustment_item_in_json_wrong_delta_type(registry_and_cleanup_s
     assert "Input should be a valid number" in str(exc_info.value)
     assert "unable to parse string as a number" in str(exc_info.value)
 
-# Тест на случай передачи уже созданных объектов TickerAdjustment (этот тест теперь нерелевантен, т.к. функция ожидает List[Dict])
-# Мы его удалим, так как adjustments_list_raw теперь всегда list of dicts с точки зрения сигнатуры функции для SDK.
-# Вместо него, проверим, что функция все еще может работать с предварительно созданными объектами, если ее вызвать напрямую (хотя SDK так не сделает)
-
-def test_direct_call_with_ticker_adjustment_objects(registry_and_cleanup_scenario: SnapshotRegistry, saved_base_snapshot: MarketSnapshot):
-    """Тестирует прямой вызов функции с уже созданными объектами TickerAdjustment.
-    Это не то, как SDK будет вызывать, но полезно для проверки внутренней логики.
-    Однако, сигнатура теперь List[Dict[str, Any]], поэтому такой вызов вызовет TypeError
-    на этапе проверки isinstance(item_raw, dict). Оставляем этот тест для демонстрации,
-    но ожидаем TypeError или изменим функцию, чтобы она принимала List[Union[Dict, TickerAdjustment]].
-    Для текущей реализации функции, этот тест должен падать или быть адаптирован.
-    Пока что закомментируем его, так как он не соответствует текущей сигнатуре для SDK.
-    """
-    # registry = registry_and_cleanup_scenario
-    # original_id = saved_base_snapshot.meta.snapshot_id
-    # adjustments_obj_list = [
-    #     TickerAdjustment(ticker="AAPL", delta=-0.003),
-    #     TickerAdjustment(ticker="GOOG", delta=0.007)
-    # ]
-    # expected_deltas_dict = {"AAPL": -0.003, "GOOG": 0.007}
-    # # Примечание: такой вызов не пройдет проверку isinstance(item_raw, dict) внутри функции
-    # # new_snapshot_id = scenario_adjust_tool(snapshot_id=original_id, adjustments_list_raw=adjustments_obj_list)
-    # # ... проверки ...
-    pass # Заглушка для этого теста, пока он неактуален для SDK-вызова
-
 # Пример теста для обновления created_at, если бы это было реализовано
 # def test_scenario_snapshot_updates_created_at(registry_and_cleanup_scenario: SnapshotRegistry, base_snapshot: MarketSnapshot):
 #     registry = registry_and_cleanup_scenario
