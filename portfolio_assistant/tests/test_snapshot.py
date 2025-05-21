@@ -231,4 +231,4 @@ def test_id_generation_if_empty(registry: SnapshotRegistry, sample_snapshot: Mar
 
     loaded_custom_snap = registry.load(pre_set_id)
     assert loaded_custom_snap is not None
-    assert loaded_custom_snap.meta.id == pre_set_id 
+    assert loaded_custom_snap.meta.id == pre_set_id

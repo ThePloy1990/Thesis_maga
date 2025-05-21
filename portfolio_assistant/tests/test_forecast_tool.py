@@ -70,27 +70,27 @@ def registry_with_test_snapshot() -> SnapshotRegistry:
     # Let's make this fixture self-contained for SnapshotRegistry for clarity
     # This will re-use the same TEST_S3_STUB_PATH as in test_snapshot.py if tests run together
     # and that fixture clears it. If run separately, it will create its own clean stub.
-    
+
     # This fixture will create its own registry to avoid interference if test_snapshot tests are not run.
     # It also needs to manage its own Redis and S3 stub state specific to this test.
     # NOTE: For a real setup, `registry_fixture` would come from a conftest.py
-    
+
     # This duplicates some setup, ideally this would be a shared fixture
     # from tests.test_snapshot import TEST_S3_STUB_PATH as SNAPSHOT_TEST_S3_STUB_PATH
     SNAPSHOT_TEST_S3_STUB_PATH = "local_test/snapshots_forecast_tool" # Define locally
-    
+
     if Path(SNAPSHOT_TEST_S3_STUB_PATH).exists():
         shutil.rmtree(SNAPSHOT_TEST_S3_STUB_PATH)
     Path(SNAPSHOT_TEST_S3_STUB_PATH).mkdir(parents=True, exist_ok=True)
-    
+
     registry = SnapshotRegistry(s3_stub_path=SNAPSHOT_TEST_S3_STUB_PATH)
     registry.delete_all_snapshots_dangerously() # Clear for this test run
 
     # Create and save a specific snapshot for testing the forecast_tool's snapshot branch
     meta = SnapshotMeta(
-        id="forecast_test_snap_001", 
+        id="forecast_test_snap_001",
         created_at=datetime.now(timezone.utc),
-        horizon_days=30, 
+        horizon_days=30,
         asset_universe=[TEST_TICKER, "AAPL"]
     )
     snapshot_data = MarketSnapshot(
@@ -105,9 +105,9 @@ def registry_with_test_snapshot() -> SnapshotRegistry:
     )
     saved_id = registry.save(snapshot_data)
     logger.info(f"Saved snapshot {saved_id} for forecast_tool test.")
-    
+
     yield registry # Provide the configured registry to the test
-    
+
     # Teardown for this specific fixture
     registry.delete_all_snapshots_dangerously() # Clean up what this fixture created
     if Path(SNAPSHOT_TEST_S3_STUB_PATH).exists():
@@ -125,7 +125,7 @@ def test_forecast_tool_on_demand(create_dummy_catboost_model):
     # Using "MSFT" as a generally available ticker for data download for the test.
     # The `forecast_tool` will use `catboost_TEST.cbm` because `ticker=TEST_TICKER`.
     # To make yfinance download work for `_calculate_features` and risk estimation,
-    # `forecast_tool` internally would use `ticker_yf` for yf.download(). 
+    # `forecast_tool` internally would use `ticker_yf` for yf.download().
     # For this test, we rely on yfinance being able to get *some* data for the TEST_TICKER
     # or we mock yf.download. For now, assume TEST_TICKER is something yf can query (e.g. if it was MSFT)
     # Let's use a common, real ticker name for the data fetching part if TEST_TICKER is abstract
@@ -206,7 +206,7 @@ def test_forecast_tool_snapshot_not_found():
     logger.info(f"Running test_forecast_tool_snapshot_not_found for ticker: {TEST_TICKER}")
     result = forecast_tool(ticker=TEST_TICKER, snapshot_id="non_existent_snapshot_123")
     logger.info(f"Non-existent snapshot forecast result for {TEST_TICKER}: {result}")
-    
+
     assert result is not None
     assert result["snapshot_id"] is None # Fell back from snapshot mode
     # Check if mu is float (on-demand was attempted) or if there was an error (e.g. yf download)
@@ -224,7 +224,7 @@ def test_forecast_tool_model_not_found():
     logger.info(f"Running test_forecast_tool_model_not_found for ticker: {NON_EXISTENT_TICKER}")
     result = forecast_tool(ticker=NON_EXISTENT_TICKER)
     logger.info(f"Model not found forecast result for {NON_EXISTENT_TICKER}: {result}")
-    
+
     assert result is not None
     assert result["mu"] is None
     assert result["sigma"] is None
@@ -233,4 +233,4 @@ def test_forecast_tool_model_not_found():
     assert f"Model for {NON_EXISTENT_TICKER} not found" in result["error"]
 
 # To run these tests, ensure yfinance can access network and Redis is running (for snapshot tests).
-# The dummy model creation handles file I/O for the model itself. 
+# The dummy model creation handles file I/O for the model itself.
