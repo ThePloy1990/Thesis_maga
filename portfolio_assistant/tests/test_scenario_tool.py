@@ -26,10 +26,10 @@ def registry_and_cleanup_scenario():
     # Создаем директорию для S3 стаба, если ее нет
     if not os.path.exists(TEST_S3_STUB_PATH_SCENARIO):
         os.makedirs(TEST_S3_STUB_PATH_SCENARIO)
-    
+
     registry = SnapshotRegistry(
-        redis_host=REDIS_HOST, 
-        redis_port=REDIS_PORT, 
+        redis_host=REDIS_HOST,
+        redis_port=REDIS_PORT,
         s3_stub_path=TEST_S3_STUB_PATH_SCENARIO
     )
     # Очистка Redis перед тестом (только ключи, которые могут быть созданы этим тестом)
@@ -45,10 +45,10 @@ def registry_and_cleanup_scenario():
 
     # Очистка после теста
     if registry.redis_client:
-        keys_to_delete = registry.redis_client.keys("snapshot:*") 
+        keys_to_delete = registry.redis_client.keys("snapshot:*")
         if keys_to_delete:
             registry.redis_client.delete(*keys_to_delete)
-            
+
     # Удаляем директорию S3 стаба
     if os.path.exists(TEST_S3_STUB_PATH_SCENARIO):
         shutil.rmtree(TEST_S3_STUB_PATH_SCENARIO)
@@ -81,7 +81,7 @@ def saved_base_snapshot(registry_and_cleanup_scenario: SnapshotRegistry, base_sn
     """Создает, сохраняет и возвращает базовый MarketSnapshot."""
     registry = registry_and_cleanup_scenario
     meta_data = base_snapshot_data["meta"]
-    
+
     # Ensure timestamp is a datetime object if it's not already (e.g. if data is from pure dict)
     if isinstance(meta_data["created_at"], str):
         meta_data["created_at"] = datetime.fromisoformat(meta_data["created_at"])
@@ -89,7 +89,7 @@ def saved_base_snapshot(registry_and_cleanup_scenario: SnapshotRegistry, base_sn
         meta_data["created_at"] = datetime.now(timezone.utc) # Fallback, should be datetime
 
     base_meta = SnapshotMeta(**meta_data)
-    
+
     base_snap = MarketSnapshot(
         meta=base_meta,
         mu=base_snapshot_data["mu"],
@@ -103,7 +103,7 @@ def saved_base_snapshot(registry_and_cleanup_scenario: SnapshotRegistry, base_sn
 def test_successful_adjustment_and_save(registry_and_cleanup_scenario: SnapshotRegistry, saved_base_snapshot: MarketSnapshot):
     registry = registry_and_cleanup_scenario
     original_id = saved_base_snapshot.meta.snapshot_id
-    
+
     adjustments_data = [
         {"ticker": "AAPL", "delta": 0.005},
         {"ticker": "MSFT", "delta": -0.002}
@@ -133,10 +133,10 @@ def test_successful_adjustment_and_save(registry_and_cleanup_scenario: SnapshotR
     assert scenario_snap.meta.source == "scenario_adjustment_tool"
     assert scenario_snap.meta.description.startswith(f"Scenario based on {original_id}")
     assert scenario_snap.meta.properties["base_snapshot_id"] == original_id
-    assert scenario_snap.meta.properties["applied_deltas"] == expected_deltas_dict 
+    assert scenario_snap.meta.properties["applied_deltas"] == expected_deltas_dict
 
     original_reloaded: MarketSnapshot = registry.load(original_id)
-    assert original_reloaded.mu == saved_base_snapshot.mu 
+    assert original_reloaded.mu == saved_base_snapshot.mu
 
 def test_adjust_ticker_not_in_snapshot(registry_and_cleanup_scenario: SnapshotRegistry, saved_base_snapshot: MarketSnapshot, capsys):
     registry = registry_and_cleanup_scenario
@@ -149,13 +149,13 @@ def test_adjust_ticker_not_in_snapshot(registry_and_cleanup_scenario: SnapshotRe
     expected_AAPL_delta = 0.001
 
     new_snapshot_id = scenario_adjust_tool(snapshot_id=original_id, deltas_json_string=deltas_json_str)
-    
+
     captured = capsys.readouterr()
     assert "Warning: Ticker 'NEWCO' in deltas not found in original snapshot's mu. Adjustment for this ticker will be skipped." in captured.out
 
     scenario_snap: MarketSnapshot = registry.load(new_snapshot_id)
     assert scenario_snap is not None
-    assert "NEWCO" not in scenario_snap.mu 
+    assert "NEWCO" not in scenario_snap.mu
     assert scenario_snap.mu["AAPL"] == pytest.approx(saved_base_snapshot.mu["AAPL"] + expected_AAPL_delta)
 
 def test_base_snapshot_not_found(registry_and_cleanup_scenario: SnapshotRegistry):
@@ -181,14 +181,14 @@ def test_id_generation_and_suffix_format(registry_and_cleanup_scenario: Snapshot
     original_id = saved_base_snapshot.meta.snapshot_id
     deltas_json_str = json.dumps([{"ticker": "AAPL", "delta": 0.001}])
     new_snapshot_id = scenario_adjust_tool(snapshot_id=original_id, deltas_json_string=deltas_json_str)
-    
+
     parts = new_snapshot_id.split("-scn-")
     assert len(parts) == 2
     base_id_for_new = original_id.split('-scn-')[0]
     assert parts[0] == base_id_for_new
-    
+
     hash_suffix = parts[1]
-    assert len(hash_suffix) == 8 
+    assert len(hash_suffix) == 8
     assert all(c in "0123456789abcdef" for c in hash_suffix.lower())
 
 def test_original_snapshot_unchanged_in_registry(registry_and_cleanup_scenario: SnapshotRegistry, saved_base_snapshot: MarketSnapshot):
@@ -198,10 +198,10 @@ def test_original_snapshot_unchanged_in_registry(registry_and_cleanup_scenario: 
     deltas_json_str = json.dumps([
         {"ticker": "AAPL", "delta": 0.123},
         {"ticker": "GOOG", "delta": -0.05}
-    ]) 
+    ])
     scenario_adjust_tool(snapshot_id=original_id, deltas_json_string=deltas_json_str)
     original_snapshot_reloaded: MarketSnapshot = registry.load(original_id)
-    
+
     assert original_snapshot_reloaded is not None
     assert original_snapshot_reloaded.mu == mu_before_tool_call
     assert original_snapshot_reloaded.mu["AAPL"] == saved_base_snapshot.mu["AAPL"]
@@ -284,6 +284,6 @@ def test_direct_call_with_ticker_adjustment_objects(registry_and_cleanup_scenari
 
 #     new_snapshot_id = scenario_adjust_tool(snapshot_id=original_id, deltas=deltas)
 #     scenario_snap: MarketSnapshot = registry.load(new_snapshot_id)
-    
+
 #     assert scenario_snap is not None
-#     assert scenario_snap.meta.created_at > original_created_at 
+#     assert scenario_snap.meta.created_at > original_created_at
