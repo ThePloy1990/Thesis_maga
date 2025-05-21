@@ -48,13 +48,16 @@ class SnapshotRegistry:
             The ID of the saved snapshot.
         """
         if not snapshot.meta.id:
-            # Allow overriding created_at if already set, otherwise set it now
-            created_at = snapshot.meta.created_at or datetime.now(timezone.utc)
+            # Формируем новые метаданные, учитывая обновлённые имена полей.
+            timestamp = getattr(snapshot.meta, "timestamp", None) or datetime.now(timezone.utc)
+
             snapshot.meta = SnapshotMeta(
-                id=self._generate_snapshot_id(),
-                created_at=created_at,
-                horizon_days=snapshot.meta.horizon_days,
-                asset_universe=snapshot.meta.asset_universe
+                snapshot_id=self._generate_snapshot_id(),
+                timestamp=timestamp,
+                tickers=snapshot.meta.tickers,
+                description=getattr(snapshot.meta, "description", None),
+                source=getattr(snapshot.meta, "source", None),
+                properties=getattr(snapshot.meta, "properties", None),
             )
 
         snapshot_id = snapshot.meta.id
@@ -85,14 +88,60 @@ class SnapshotRegistry:
         # Try to load from Redis
         snapshot_json = self.redis_client.get(f"{self._snapshot_key_prefix}{snapshot_id}")
         if snapshot_json:
-            return MarketSnapshot.model_validate_json(snapshot_json)
+            try:
+                return MarketSnapshot.model_validate_json(snapshot_json)
+            except Exception as e:
+                # Если не удалось загрузить напрямую, попробуем обновить структуру
+                try:
+                    snapshot_data = json.loads(snapshot_json)
+                    # Обновляем метаданные для соответствия новым полям
+                    if "meta" in snapshot_data:
+                        meta = snapshot_data["meta"]
+                        # Переименовываем поля в соответствии с новыми именами
+                        if "snapshot_id" in meta and "id" not in meta:
+                            meta["id"] = meta["snapshot_id"]
+                        if "timestamp" in meta and "created_at" not in meta:
+                            meta["created_at"] = meta["timestamp"]
+                        if "tickers" in meta and "asset_universe" not in meta:
+                            meta["asset_universe"] = meta["tickers"]
+                        # Проверяем наличие horizon_days
+                        if "horizon_days" not in meta and "properties" in meta and "horizon_days" in meta["properties"]:
+                            meta["horizon_days"] = meta["properties"]["horizon_days"]
+                        elif "horizon_days" not in meta:
+                            meta["horizon_days"] = 30  # Значение по умолчанию, если нет
+
+                        return MarketSnapshot.model_validate(snapshot_data)
+                except Exception as conversion_error:
+                    print(f"Failed to convert old format: {conversion_error}")
+                    raise e
 
         # Try to load from S3 stub
         s3_file_path = self.s3_stub_path / f"{snapshot_id}.json"
         if s3_file_path.exists():
             with open(s3_file_path, 'r') as f:
                 snapshot_data = json.load(f)
-            return MarketSnapshot.model_validate(snapshot_data)
+                
+            # Обновляем метаданные для соответствия новым полям
+            if "meta" in snapshot_data:
+                meta = snapshot_data["meta"]
+                # Переименовываем поля в соответствии с новыми именами
+                if "snapshot_id" in meta and "id" not in meta:
+                    meta["id"] = meta["snapshot_id"]
+                if "timestamp" in meta and "created_at" not in meta:
+                    meta["created_at"] = meta["timestamp"]
+                if "tickers" in meta and "asset_universe" not in meta:
+                    meta["asset_universe"] = meta["tickers"]
+                # Проверяем наличие horizon_days
+                if "horizon_days" not in meta and "properties" in meta and "horizon_days" in meta["properties"]:
+                    meta["horizon_days"] = meta["properties"]["horizon_days"]
+                elif "horizon_days" not in meta:
+                    meta["horizon_days"] = 30  # Значение по умолчанию, если нет
+                
+            try:
+                return MarketSnapshot.model_validate(snapshot_data)
+            except Exception as e:
+                print(f"Failed to load snapshot from S3 stub: {e}")
+                raise
 
         return None
 

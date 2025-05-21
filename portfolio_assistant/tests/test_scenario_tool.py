@@ -58,9 +58,10 @@ def base_snapshot_data() -> Dict:
     """Данные для создания базового MarketSnapshot."""
     return {
         "meta": {
-            "snapshot_id": "test_base_snap_for_scenario",
-            "timestamp": datetime.now(timezone.utc),
-            "tickers": ["AAPL", "MSFT", "GOOG"],
+            "id": "test_base_snap_for_scenario",
+            "created_at": datetime.now(timezone.utc),
+            "asset_universe": ["AAPL", "MSFT", "GOOG"],
+            "horizon_days": 30,
             "description": "Base snapshot for scenario tests",
             "source": "test_fixture",
             "properties": {"test_prop": "value1", "horizon_days": 30}
@@ -82,10 +83,10 @@ def saved_base_snapshot(registry_and_cleanup_scenario: SnapshotRegistry, base_sn
     meta_data = base_snapshot_data["meta"]
     
     # Ensure timestamp is a datetime object if it's not already (e.g. if data is from pure dict)
-    if isinstance(meta_data["timestamp"], str):
-        meta_data["timestamp"] = datetime.fromisoformat(meta_data["timestamp"])
-    elif not isinstance(meta_data["timestamp"], datetime):
-        meta_data["timestamp"] = datetime.now(timezone.utc) # Fallback, should be datetime
+    if isinstance(meta_data["created_at"], str):
+        meta_data["created_at"] = datetime.fromisoformat(meta_data["created_at"])
+    elif not isinstance(meta_data["created_at"], datetime):
+        meta_data["created_at"] = datetime.now(timezone.utc) # Fallback, should be datetime
 
     base_meta = SnapshotMeta(**meta_data)
     
@@ -96,27 +97,28 @@ def saved_base_snapshot(registry_and_cleanup_scenario: SnapshotRegistry, base_sn
         market_caps=base_snapshot_data.get("market_caps"),
         prices=base_snapshot_data.get("prices")
     )
-    registry.save_snapshot(base_snap)
+    registry.save(base_snap)
     return base_snap
 
 def test_successful_adjustment_and_save(registry_and_cleanup_scenario: SnapshotRegistry, saved_base_snapshot: MarketSnapshot):
     registry = registry_and_cleanup_scenario
     original_id = saved_base_snapshot.meta.snapshot_id
     
-    adjustments_list_data = [
+    adjustments_data = [
         {"ticker": "AAPL", "delta": 0.005},
         {"ticker": "MSFT", "delta": -0.002}
     ]
+    deltas_json_str = json.dumps(adjustments_data)
     expected_deltas_dict = {"AAPL": 0.005, "MSFT": -0.002}
 
-    new_snapshot_id = scenario_adjust_tool(snapshot_id=original_id, adjustments_list_raw=adjustments_list_data)
+    new_snapshot_id = scenario_adjust_tool(snapshot_id=original_id, deltas_json_string=deltas_json_str)
 
     expected_prefix = original_id + "-scn-"
     assert new_snapshot_id.startswith(expected_prefix)
     hash_part = new_snapshot_id[len(expected_prefix):]
     assert len(hash_part) == 8
 
-    scenario_snap: MarketSnapshot = registry.load_snapshot(new_snapshot_id)
+    scenario_snap: MarketSnapshot = registry.load(new_snapshot_id)
     assert scenario_snap is not None
     assert scenario_snap.meta.snapshot_id == new_snapshot_id
 
@@ -133,51 +135,52 @@ def test_successful_adjustment_and_save(registry_and_cleanup_scenario: SnapshotR
     assert scenario_snap.meta.properties["base_snapshot_id"] == original_id
     assert scenario_snap.meta.properties["applied_deltas"] == expected_deltas_dict 
 
-    original_reloaded: MarketSnapshot = registry.load_snapshot(original_id)
+    original_reloaded: MarketSnapshot = registry.load(original_id)
     assert original_reloaded.mu == saved_base_snapshot.mu 
 
 def test_adjust_ticker_not_in_snapshot(registry_and_cleanup_scenario: SnapshotRegistry, saved_base_snapshot: MarketSnapshot, capsys):
     registry = registry_and_cleanup_scenario
     original_id = saved_base_snapshot.meta.snapshot_id
-    adjustments_list_data = [
+    adjustments_data = [
         {"ticker": "NEWCO", "delta": 0.05},
         {"ticker": "AAPL", "delta": 0.001}
     ]
-    expected_deltas_dict = {"NEWCO": 0.05, "AAPL": 0.001}
+    deltas_json_str = json.dumps(adjustments_data)
+    expected_AAPL_delta = 0.001
 
-    new_snapshot_id = scenario_adjust_tool(snapshot_id=original_id, adjustments_list_raw=adjustments_list_data)
+    new_snapshot_id = scenario_adjust_tool(snapshot_id=original_id, deltas_json_string=deltas_json_str)
     
     captured = capsys.readouterr()
     assert "Warning: Ticker 'NEWCO' in deltas not found in original snapshot's mu. Adjustment for this ticker will be skipped." in captured.out
 
-    scenario_snap: MarketSnapshot = registry.load_snapshot(new_snapshot_id)
+    scenario_snap: MarketSnapshot = registry.load(new_snapshot_id)
     assert scenario_snap is not None
     assert "NEWCO" not in scenario_snap.mu 
-    assert scenario_snap.mu["AAPL"] == pytest.approx(saved_base_snapshot.mu["AAPL"] + expected_deltas_dict["AAPL"])
+    assert scenario_snap.mu["AAPL"] == pytest.approx(saved_base_snapshot.mu["AAPL"] + expected_AAPL_delta)
 
 def test_base_snapshot_not_found(registry_and_cleanup_scenario: SnapshotRegistry):
     non_existent_id = "id_that_does_not_exist"
-    adjustments_list_data = [{"ticker": "AAPL", "delta": 0.01}]
+    deltas_json_str = json.dumps([{"ticker": "AAPL", "delta": 0.01}])
     with pytest.raises(ValueError, match=f"Snapshot with ID '{non_existent_id}' not found."):
-        scenario_adjust_tool(snapshot_id=non_existent_id, adjustments_list_raw=adjustments_list_data)
+        scenario_adjust_tool(snapshot_id=non_existent_id, deltas_json_string=deltas_json_str)
 
-def test_empty_deltas_list(registry_and_cleanup_scenario: SnapshotRegistry, saved_base_snapshot: MarketSnapshot):
+def test_empty_deltas_list_in_json_string(registry_and_cleanup_scenario: SnapshotRegistry, saved_base_snapshot: MarketSnapshot):
     registry = registry_and_cleanup_scenario
     original_id = saved_base_snapshot.meta.snapshot_id
-    adjustments_list_data = []
+    deltas_json_str = json.dumps([]) # Пустой список как JSON-строка
 
-    new_snapshot_id = scenario_adjust_tool(snapshot_id=original_id, adjustments_list_raw=adjustments_list_data)
+    new_snapshot_id = scenario_adjust_tool(snapshot_id=original_id, deltas_json_string=deltas_json_str)
     expected_prefix = original_id + "-scn-"
     assert new_snapshot_id.startswith(expected_prefix)
 
-    scenario_snap: MarketSnapshot = registry.load_snapshot(new_snapshot_id)
+    scenario_snap: MarketSnapshot = registry.load(new_snapshot_id)
     assert scenario_snap is not None
     assert scenario_snap.mu == saved_base_snapshot.mu
 
 def test_id_generation_and_suffix_format(registry_and_cleanup_scenario: SnapshotRegistry, saved_base_snapshot: MarketSnapshot):
     original_id = saved_base_snapshot.meta.snapshot_id
-    adjustments_list_data = [{"ticker": "AAPL", "delta": 0.001}]
-    new_snapshot_id = scenario_adjust_tool(snapshot_id=original_id, adjustments_list_raw=adjustments_list_data)
+    deltas_json_str = json.dumps([{"ticker": "AAPL", "delta": 0.001}])
+    new_snapshot_id = scenario_adjust_tool(snapshot_id=original_id, deltas_json_string=deltas_json_str)
     
     parts = new_snapshot_id.split("-scn-")
     assert len(parts) == 2
@@ -192,41 +195,51 @@ def test_original_snapshot_unchanged_in_registry(registry_and_cleanup_scenario: 
     registry = registry_and_cleanup_scenario
     original_id = saved_base_snapshot.meta.snapshot_id
     mu_before_tool_call = copy.deepcopy(saved_base_snapshot.mu)
-    adjustments_list_data = [
+    deltas_json_str = json.dumps([
         {"ticker": "AAPL", "delta": 0.123},
         {"ticker": "GOOG", "delta": -0.05}
-    ] 
-    scenario_adjust_tool(snapshot_id=original_id, adjustments_list_raw=adjustments_list_data)
-    original_snapshot_reloaded: MarketSnapshot = registry.load_snapshot(original_id)
+    ]) 
+    scenario_adjust_tool(snapshot_id=original_id, deltas_json_string=deltas_json_str)
+    original_snapshot_reloaded: MarketSnapshot = registry.load(original_id)
     
     assert original_snapshot_reloaded is not None
     assert original_snapshot_reloaded.mu == mu_before_tool_call
     assert original_snapshot_reloaded.mu["AAPL"] == saved_base_snapshot.mu["AAPL"]
 
 # Тесты на невалидные входы
-def test_adjustments_list_not_a_list(registry_and_cleanup_scenario: SnapshotRegistry, saved_base_snapshot: MarketSnapshot):
+def test_invalid_json_string(registry_and_cleanup_scenario: SnapshotRegistry, saved_base_snapshot: MarketSnapshot):
     original_id = saved_base_snapshot.meta.snapshot_id
-    invalid_input = "not_a_list"
-    with pytest.raises(TypeError, match="adjustments_list_raw must be a list"):
-        scenario_adjust_tool(snapshot_id=original_id, adjustments_list_raw=invalid_input)
+    invalid_json_str = "not a valid json string {{{{ "
+    with pytest.raises(ValueError, match="Invalid JSON format for deltas_json_string"):
+        scenario_adjust_tool(snapshot_id=original_id, deltas_json_string=invalid_json_str)
 
-def test_adjustments_list_item_not_a_dict(registry_and_cleanup_scenario: SnapshotRegistry, saved_base_snapshot: MarketSnapshot):
+def test_json_string_not_a_list(registry_and_cleanup_scenario: SnapshotRegistry, saved_base_snapshot: MarketSnapshot):
     original_id = saved_base_snapshot.meta.snapshot_id
-    invalid_list = [{"ticker": "AAPL", "delta": 0.1}, "not_a_dict"]
-    with pytest.raises(TypeError, match="Each item in adjustments_list_raw must be a dictionary, item at index 1 is <class 'str'>"):
-        scenario_adjust_tool(snapshot_id=original_id, adjustments_list_raw=invalid_list)
+    json_str_not_list = json.dumps({"ticker": "AAPL", "delta": 0.1}) # JSON-объект, а не массив
+    with pytest.raises(TypeError, match="Parsed deltas_json_string must be a list"):
+        scenario_adjust_tool(snapshot_id=original_id, deltas_json_string=json_str_not_list)
 
-def test_invalid_adjustment_item_missing_ticker(registry_and_cleanup_scenario: SnapshotRegistry, saved_base_snapshot: MarketSnapshot):
+def test_json_list_item_not_a_dict(registry_and_cleanup_scenario: SnapshotRegistry, saved_base_snapshot: MarketSnapshot):
     original_id = saved_base_snapshot.meta.snapshot_id
-    invalid_list = [{"delta": 0.1}] 
-    with pytest.raises(ValueError, match=r"Invalid data for TickerAdjustment at index 0: .*Input required for field ticker"):
-        scenario_adjust_tool(snapshot_id=original_id, adjustments_list_raw=invalid_list)
+    json_str_item_not_dict = json.dumps([{"ticker": "AAPL", "delta": 0.1}, "not_a_dict"])
+    with pytest.raises(TypeError, match="Each item in the parsed list must be a dictionary, item at index 1 is <class 'str'>"):
+        scenario_adjust_tool(snapshot_id=original_id, deltas_json_string=json_str_item_not_dict)
 
-def test_invalid_adjustment_item_wrong_delta_type(registry_and_cleanup_scenario: SnapshotRegistry, saved_base_snapshot: MarketSnapshot):
+def test_invalid_adjustment_item_in_json_missing_ticker(registry_and_cleanup_scenario: SnapshotRegistry, saved_base_snapshot: MarketSnapshot):
     original_id = saved_base_snapshot.meta.snapshot_id
-    invalid_list = [{"ticker": "AAPL", "delta": "not-a-float"}]
-    with pytest.raises(ValueError, match=r"Invalid data for TickerAdjustment at index 0: .*Input should be a valid number"):
-        scenario_adjust_tool(snapshot_id=original_id, adjustments_list_raw=invalid_list)
+    json_str_missing_ticker = json.dumps([{"delta": 0.1}])
+    with pytest.raises(ValueError) as exc_info:
+        scenario_adjust_tool(snapshot_id=original_id, deltas_json_string=json_str_missing_ticker)
+    assert "Field required [type=missing" in str(exc_info.value)
+    assert "ticker" in str(exc_info.value)
+
+def test_invalid_adjustment_item_in_json_wrong_delta_type(registry_and_cleanup_scenario: SnapshotRegistry, saved_base_snapshot: MarketSnapshot):
+    original_id = saved_base_snapshot.meta.snapshot_id
+    json_str_wrong_delta = json.dumps([{"ticker": "AAPL", "delta": "not-a-float"}])
+    with pytest.raises(ValueError) as exc_info:
+        scenario_adjust_tool(snapshot_id=original_id, deltas_json_string=json_str_wrong_delta)
+    assert "Input should be a valid number" in str(exc_info.value)
+    assert "unable to parse string as a number" in str(exc_info.value)
 
 # Тест на случай передачи уже созданных объектов TickerAdjustment (этот тест теперь нерелевантен, т.к. функция ожидает List[Dict])
 # Мы его удалим, так как adjustments_list_raw теперь всегда list of dicts с точки зрения сигнатуры функции для SDK.
