@@ -121,7 +121,7 @@ class SnapshotRegistry:
         if s3_file_path.exists():
             with open(s3_file_path, 'r') as f:
                 snapshot_data = json.load(f)
-
+                
             # Обновляем метаданные для соответствия новым полям
             if "meta" in snapshot_data:
                 meta = snapshot_data["meta"]
@@ -138,7 +138,7 @@ class SnapshotRegistry:
                         meta["horizon_days"] = meta["properties"]["horizon_days"]
                     else:
                         meta["horizon_days"] = 30  # Значение по умолчанию, если нет
-
+                
             try:
                 return MarketSnapshot.model_validate(snapshot_data)
             except Exception as e:
@@ -237,4 +237,4 @@ class SnapshotRegistry:
         # Delete from S3 stub
         for f_path in self.s3_stub_path.glob('*.json'):
             os.remove(f_path)
-        print(f"All snapshots deleted from Redis and {self.s3_stub_path}")
+        print(f"All snapshots deleted from Redis and {self.s3_stub_path}") 
