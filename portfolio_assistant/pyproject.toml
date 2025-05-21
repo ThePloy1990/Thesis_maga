@@ -7,7 +7,7 @@ readme = "README.md"
 packages = [{include = "src", from = "."}]
 
 [tool.poetry.dependencies]
-python = "^3.10"
+python = ">=3.10, <3.13.4"
 numpy = "*"
 pandas = "*"
 pydantic = "*"
@@ -15,8 +15,8 @@ redis = "*"
 fastapi = "*"
 uvicorn = {extras = ["standard"], version = "*"}
 aiohttp = "*"
-torch = "*"
-pytorch-lightning = "*"
+torch = "^2.7.0"
+# pytorch-lightning = "*"
 pyportfolioopt = "*"
 transformers = ">=4.41"
 openai = "*"
@@ -24,8 +24,11 @@ llama-index = "*"
 yfinance = "*"
 ccxt = "*"
 orbit-ml = "*"
-typer = "*"
-loguru = "*"
+typer = "^0.12.3"
+loguru = "^0.7.2"
+newsapi-python = "^0.2.7"
+catboost = "*"
+pandas-ta = "*"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "*"

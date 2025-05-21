@@ -1,0 +1,28 @@
+numpy~=1.26.0
+pandas
+pydantic
+redis
+fastapi
+uvicorn[standard]
+aiohttp
+torch>=2.7.0,<2.8.0
+# pytorch-lightning
+PyPortfolioOpt
+transformers>=4.41
+openai
+llama-index
+yfinance
+ccxt
+orbit-ml
+typer>=0.12.3,<0.13.0
+loguru>=0.7.2,<0.8.0
+newsapi-python>=0.2.7,<0.3.0
+catboost
+pandas-ta
+# Зависимости для разработки
+pytest
+pytest-cov
+ruff
+mypy
+newsapi-python
+transformers
