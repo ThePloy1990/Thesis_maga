@@ -15,7 +15,7 @@ def optimize_tool(
     risk_aversion: float = 2.5,  # Used as delta for market-implied prior in BL
     method: str = "black_litterman",  # or "markowitz"
     max_weight: float = 0.4,
-    risk_free_rate: float = 0.02
+    risk_free_rate: float = 0.005  # Снижено с 0.02 до 0.005 для соответствия текущим низким доходностям
 ) -> Dict:
     """
     Optimizes a portfolio based on a given market snapshot.
