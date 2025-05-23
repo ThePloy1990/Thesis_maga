@@ -2,6 +2,7 @@ import json
 import logging
 import re
 from typing import Dict, Any, List, Optional, Tuple
+from datetime import datetime
 
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.constants import ParseMode
@@ -16,7 +17,11 @@ from .state import (
     update_risk_profile,
     update_budget,
     update_positions,
-    update_snapshot_id
+    update_snapshot_id,
+    redis_client,
+    USER_STATE_PREFIX,
+    save_portfolio_snapshot,
+    get_portfolio_history
 )
 from .reply import (
     send_markdown,
@@ -26,8 +31,10 @@ from .reply import (
 from .agent_integration import (
     run_portfolio_manager,
     build_snapshot,
-    get_latest_snapshot_info
+    get_latest_snapshot_info,
+    get_available_tickers
 )
+from ..market_snapshot.registry import SnapshotRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +77,11 @@ HELP_MESSAGE = """
 📊 *Снапшоты:*
 /snapshot - Информация о текущем снапшоте
 /update - Обновить данные о рынке
+/tickers - Показать список всех доступных тикеров
+
+📈 *Портфель:*
+/accept [имя] - Зафиксировать текущий портфель для отслеживания
+/performance - Показать изменение портфеля со времени первой фиксации
 
 *Примеры запросов:*
 • "Собери портфель из AAPL, MSFT и BTC"
@@ -77,6 +89,7 @@ HELP_MESSAGE = """
 • "Сделай сценарий с ростом AAPL на 10%"
 • "Какой коэффициент Шарпа у моего портфеля?"
 • "Покажи эффективную границу для моих активов"
+• "Обнови позиции" - применяет последнее предложение по портфелю
 """
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -290,9 +303,44 @@ async def snapshot_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     user_id = update.effective_user.id
     logger.info(f"User {user_id} requested snapshot info")
     
+    # Получаем состояние пользователя
+    user_state = get_user_state(user_id)
+    
     # Получаем информацию о снапшоте
     await send_typing_action(update, context)
-    snapshot_info = await get_latest_snapshot_info()
+    
+    # Сначала проверяем наличие ID снапшота в состоянии пользователя
+    user_snapshot_id = user_state.get("last_snapshot_id")
+    
+    if user_snapshot_id:
+        # Если у пользователя есть сохраненный ID снапшота, загружаем его
+        registry = SnapshotRegistry()
+        user_snapshot = registry.load(user_snapshot_id)
+        
+        if user_snapshot:
+            # Если нашли снапшот по ID из состояния пользователя, используем его
+            snapshot_id = user_snapshot_id
+            timestamp = user_snapshot.meta.timestamp or user_snapshot.meta.created_at
+            tickers = user_snapshot.meta.tickers or user_snapshot.meta.asset_universe
+            
+            snapshot_info = {
+                "snapshot_id": snapshot_id,
+                "timestamp": timestamp.isoformat() if timestamp else None,
+                "tickers": tickers,
+                "error": None
+            }
+        else:
+            # Если не нашли снапшот по ID из состояния пользователя, получаем последний
+            snapshot_info = await get_latest_snapshot_info()
+            # Обновляем ID снапшота в состоянии пользователя
+            if snapshot_info.get("snapshot_id"):
+                update_snapshot_id(user_id, snapshot_info["snapshot_id"])
+    else:
+        # Если у пользователя нет сохраненного ID снапшота, получаем последний
+        snapshot_info = await get_latest_snapshot_info()
+        # Обновляем ID снапшота в состоянии пользователя
+        if snapshot_info.get("snapshot_id"):
+            update_snapshot_id(user_id, snapshot_info["snapshot_id"])
     
     if snapshot_info.get("error"):
         await send_markdown(
@@ -306,9 +354,6 @@ async def snapshot_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     snapshot_id = snapshot_info["snapshot_id"]
     timestamp = snapshot_info["timestamp"]
     tickers = snapshot_info["tickers"]
-    
-    # Обновляем последний использованный снапшот в состоянии пользователя
-    update_snapshot_id(user_id, snapshot_id)
     
     message = f"""
 *Текущий снапшот:* `{snapshot_id}`
@@ -326,6 +371,56 @@ async def snapshot_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     message += "\n\nДля обновления данных используйте команду /update"
     
     await send_markdown(update, context, message, add_disclaimer=False)
+
+async def update_all_users_snapshot_id():
+    """
+    Обновляет ID последнего снапшота для всех пользователей в базе данных.
+    
+    Returns:
+        Tuple[int, str]: Кортеж с количеством обновленных пользователей и ID установленного снапшота
+    """
+    try:
+        # Получаем последний снапшот
+        registry = SnapshotRegistry()
+        latest_snapshot = registry.latest()
+        
+        if not latest_snapshot:
+            logger.warning("No snapshots available to update users")
+            return (0, "No snapshots available")
+        
+        snapshot_id = latest_snapshot.meta.id
+        logger.info(f"Updating all users to latest snapshot: {snapshot_id}")
+        
+        # Получаем всех пользователей из Redis
+        if not redis_client:
+            logger.error("Redis client not available. Can't update users.")
+            return (0, f"Redis client not available")
+        
+        user_keys = redis_client.keys(f"{USER_STATE_PREFIX}*")
+        updated_count = 0
+        
+        for user_key in user_keys:
+            try:
+                # Получаем ID пользователя из ключа
+                user_id_str = user_key.replace(USER_STATE_PREFIX, "")
+                user_id = int(user_id_str)
+                
+                # Обновляем ID снапшота для пользователя
+                result = update_snapshot_id(user_id, snapshot_id)
+                if result:
+                    updated_count += 1
+                    logger.debug(f"Updated snapshot ID for user {user_id}")
+                else:
+                    logger.warning(f"Failed to update snapshot ID for user {user_id}")
+            except Exception as e:
+                logger.error(f"Error updating user {user_key}: {str(e)}")
+                continue
+        
+        logger.info(f"Successfully updated {updated_count} users to snapshot {snapshot_id}")
+        return (updated_count, snapshot_id)
+    except Exception as e:
+        logger.error(f"Error updating all users' snapshot ID: {str(e)}")
+        return (0, f"Error: {str(e)}")
 
 async def update_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
@@ -349,6 +444,16 @@ async def update_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     # Запускаем обновление снапшота
     await send_typing_action(update, context)
     result = await build_snapshot()
+    
+    # Проверяем успешность создания снапшота и обновляем ID в состоянии пользователя
+    if "Создан новый снапшот:" in result:
+        # Извлекаем ID снапшота из результата
+        snapshot_id_match = re.search(r"Создан новый снапшот: (\S+)", result)
+        if snapshot_id_match:
+            new_snapshot_id = snapshot_id_match.group(1)
+            # Обновляем ID снапшота в состоянии пользователя
+            update_snapshot_id(user_id, new_snapshot_id)
+            logger.info(f"Updated snapshot_id for user {user_id} to {new_snapshot_id}")
     
     # Отправляем результат
     await send_markdown(
@@ -388,6 +493,96 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     """
     user_id = update.effective_user.id
     message_text = update.message.text
+    
+    # Проверка на запрос обновления позиций без указания тикеров
+    simple_update_pattern = r"^(обнови|обновить|измени|изменить)\s+(позиции|список|портфель)$"
+    simple_match = re.search(simple_update_pattern, message_text.lower())
+    
+    if simple_match:
+        logger.info(f"User {user_id} requested portfolio update without specifying tickers")
+        
+        # Получаем последний запрос на изменение позиций из истории диалога
+        state = get_user_state(user_id)
+        dialog_memory = state.get("dialog_memory", [])
+        
+        # Ищем последний ответ ассистента, где он предложил позиции
+        portfolio_suggestion = None
+        for msg in reversed(dialog_memory):
+            if msg.get("role") == "assistant" and re.search(r"ваш(его|ему)?.*(портфел|позици)", msg.get("content", "").lower()):
+                portfolio_suggestion = msg.get("content")
+                break
+        
+        if not portfolio_suggestion:
+            await send_markdown(
+                update, 
+                context, 
+                "❌ Не найдено недавних предложений по обновлению портфеля. Пожалуйста, укажите тикеры явно.", 
+                add_disclaimer=False
+            )
+            return
+        
+        # Извлекаем тикеры из предложения
+        tickers = []
+        portfolio_text = portfolio_suggestion.lower()
+        ticker_matches = re.finditer(r"[^a-z]([A-Z]{1,5})[^a-z]", portfolio_suggestion)
+        
+        for match in ticker_matches:
+            tickers.append(match.group(1))
+        
+        if not tickers:
+            await send_markdown(
+                update, 
+                context, 
+                "❌ Не удалось извлечь тикеры из последнего предложения. Пожалуйста, укажите тикеры явно.", 
+                add_disclaimer=False
+            )
+            return
+        
+        # Создаем новые позиции
+        new_positions = {ticker: 100 for ticker in tickers}
+        
+        # Обновляем позиции в состоянии пользователя
+        update_positions(user_id, new_positions)
+        
+        positions_text = "*Ваши обновленные позиции:*\n\n"
+        for ticker, amount in new_positions.items():
+            positions_text += f"• *{ticker}*: {amount}\n"
+        
+        await send_markdown(
+            update, 
+            context, 
+            positions_text, 
+            add_disclaimer=False
+        )
+        return
+    
+    # Проверка на запрос обновления позиций с указанными тикерами
+    update_positions_pattern = r"(обнови|обновить|измени|изменить|установи|задай).+(позиции|список|портфель)[^а-яА-Я]*(используя|используя тикеры|из|состоящий из|с тикерами)[^а-яА-Я]*([A-Z]{1,5}(,\s*[A-Z]{1,5})*)"
+    match = re.search(update_positions_pattern, message_text.lower())
+    
+    if match:
+        logger.info(f"User {user_id} requested portfolio update via text command")
+        # Извлекаем список тикеров
+        tickers_text = match.group(4).strip()
+        tickers = [ticker.strip() for ticker in re.split(r',\s*', tickers_text)]
+        
+        # Создаем новые позиции
+        new_positions = {ticker: 100 for ticker in tickers}
+        
+        # Обновляем позиции в состоянии пользователя
+        update_positions(user_id, new_positions)
+        
+        positions_text = "*Ваши обновленные позиции:*\n\n"
+        for ticker, amount in new_positions.items():
+            positions_text += f"• *{ticker}*: {amount}\n"
+        
+        await send_markdown(
+            update, 
+            context, 
+            positions_text, 
+            add_disclaimer=False
+        )
+        return
     
     # Добавляем сообщение в историю диалога
     update_dialog_memory(user_id, message_text, role="user")
@@ -608,4 +803,197 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 add_disclaimer=False
             )
     except Exception as e:
-        logger.error(f"Error in error handler: {str(e)}") 
+        logger.error(f"Error in error handler: {str(e)}")
+
+async def tickers_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Обработчик команды /tickers - показывает список всех доступных тикеров.
+    
+    Args:
+        update: Объект Update от Telegram
+        context: Контекст обработчика
+    """
+    user_id = update.effective_user.id
+    logger.info(f"User {user_id} requested available tickers list")
+    
+    # Отправляем индикатор набора текста
+    await send_typing_action(update, context)
+    
+    # Получаем список доступных тикеров
+    available_tickers = get_available_tickers(use_cache=False)  # Принудительно обновляем список
+    
+    if not available_tickers:
+        await send_markdown(
+            update, 
+            context, 
+            "❌ Не удалось найти доступные тикеры. Проверьте наличие моделей в директории models/.", 
+            add_disclaimer=False
+        )
+        return
+    
+    # Группируем тикеры для лучшей читаемости (по 5 в строке)
+    tickers_chunks = []
+    for i in range(0, len(available_tickers), 5):
+        chunk = available_tickers[i:i+5]
+        tickers_chunks.append(", ".join(f"`{ticker}`" for ticker in chunk))
+    
+    message = f"""
+*Доступные тикеры ({len(available_tickers)}):*
+
+{"\n".join(tickers_chunks)}
+
+Вы можете использовать эти тикеры для анализа, прогнозирования и оптимизации портфеля.
+"""
+    
+    await send_markdown(update, context, message, add_disclaimer=False)
+
+async def update_all_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Обработчик команды /updateall для обновления ID снапшота всех пользователей.
+    
+    Args:
+        update: Объект Update от Telegram
+        context: Контекст обработчика
+    """
+    user_id = update.effective_user.id
+    logger.info(f"User {user_id} requested update of all users' snapshots")
+    
+    # Отправляем сообщение о начале обновления
+    await send_markdown(
+        update, 
+        context, 
+        "⏳ Обновляю снапшот для всех пользователей...", 
+        add_disclaimer=False
+    )
+    
+    # Запускаем обновление снапшотов для всех пользователей
+    await send_typing_action(update, context)
+    updated_count, snapshot_id = await update_all_users_snapshot_id()
+    
+    if updated_count > 0:
+        result = f"✅ Обновлено {updated_count} пользователей на снапшот: `{snapshot_id}`"
+    else:
+        result = f"❌ Не удалось обновить снапшоты: {snapshot_id}"
+    
+    # Отправляем результат
+    await send_markdown(
+        update, 
+        context, 
+        result, 
+        add_disclaimer=False
+    )
+
+async def accept_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Обработчик команды /accept для фиксации текущего портфеля.
+    
+    Args:
+        update: Объект Update от Telegram
+        context: Контекст обработчика
+    """
+    user_id = update.effective_user.id
+    logger.info(f"User {user_id} requested to accept current portfolio")
+    
+    # Получаем текущие позиции
+    state = get_user_state(user_id)
+    positions = state.get("positions", {})
+    
+    if not positions:
+        await send_markdown(
+            update, 
+            context, 
+            "❌ Ваш портфель пуст. Нечего фиксировать.", 
+            add_disclaimer=False
+        )
+        return
+        
+    # Опциональное имя для снимка портфеля
+    snapshot_name = None
+    if context.args and len(context.args) > 0:
+        snapshot_name = " ".join(context.args)
+        
+    # Сохраняем снимок портфеля
+    result = save_portfolio_snapshot(user_id, snapshot_name)
+    
+    if result:
+        await send_markdown(
+            update, 
+            context, 
+            f"✅ Текущий портфель успешно зафиксирован{' как «' + snapshot_name + '»' if snapshot_name else ''}.\n\n"
+            "Теперь вы можете отслеживать его производительность с течением времени и запрашивать аналитику командой /performance.",
+            add_disclaimer=False
+        )
+    else:
+        await send_markdown(
+            update, 
+            context, 
+            "❌ Не удалось зафиксировать портфель. Пожалуйста, попробуйте позже.",
+            add_disclaimer=False
+        )
+
+async def performance_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Обработчик команды /performance для отображения производительности портфеля.
+    
+    Args:
+        update: Объект Update от Telegram
+        context: Контекст обработчика
+    """
+    user_id = update.effective_user.id
+    logger.info(f"User {user_id} requested portfolio performance")
+    
+    portfolio_history = get_portfolio_history(user_id)
+    
+    if not portfolio_history:
+        await send_markdown(
+            update, 
+            context, 
+            "❌ История портфеля пуста. Используйте команду /accept, чтобы зафиксировать текущий портфель.", 
+            add_disclaimer=False
+        )
+        return
+        
+    # Для простоты берем первый и последний снимок
+    first_snapshot = portfolio_history[0]
+    last_snapshot = portfolio_history[-1]
+    
+    # Формируем текст с результатами
+    first_date = datetime.fromisoformat(first_snapshot['timestamp']).strftime('%d.%m.%Y')
+    last_date = datetime.fromisoformat(last_snapshot['timestamp']).strftime('%d.%m.%Y')
+    
+    # Рассчитываем изменения
+    change_pct = ((last_snapshot['portfolio_value'] / first_snapshot['portfolio_value']) - 1) * 100
+    
+    performance_text = f"""
+*Сравнение производительности портфеля*
+
+📊 Начальный портфель ({first_snapshot['name']}):
+Дата: {first_date}
+Стоимость: ${first_snapshot['portfolio_value']:,.2f}
+
+📈 Текущий портфель ({last_snapshot['name']}):
+Дата: {last_date}
+Стоимость: ${last_snapshot['portfolio_value']:,.2f}
+
+💰 Изменение: {change_pct:.2f}% {'+' if change_pct > 0 else ''}
+
+*Позиции в начальном портфеле:*
+"""
+    
+    for ticker, amount in first_snapshot['positions'].items():
+        performance_text += f"• *{ticker}*: {amount}\n"
+        
+    performance_text += "\n*Позиции в текущем портфеле:*\n"
+    
+    for ticker, amount in last_snapshot['positions'].items():
+        performance_text += f"• *{ticker}*: {amount}\n"
+        
+    await send_markdown(
+        update, 
+        context, 
+        performance_text, 
+        add_disclaimer=True
+    )
+    
+    # TODO: Добавить генерацию графика производительности
+    # и отправку его пользователю 

@@ -1,27 +1,30 @@
 import logging
-from typing import Dict, Optional
+from typing import Dict, Optional, List
+from pathlib import Path
 
 import pandas as pd
 import numpy as np
 from pypfopt import EfficientFrontier, BlackLittermanModel, expected_returns, risk_models
 
-from src.market_snapshot.registry import SnapshotRegistry
+from ..market_snapshot.registry import SnapshotRegistry
 
 logger = logging.getLogger(__name__)
 
 
 def optimize_tool(
-    snapshot_id: str,
-    risk_aversion: float = 2.5,  # Used as delta for market-implied prior in BL
+    tickers: Optional[List[str]] = None,  # Список тикеров для оптимизации
+    snapshot_id: str = None,  # ID снэпшота (опционально)
+    risk_aversion: float = 1.0,  # Снижено с 2.5 до 1.0 для более агрессивной оптимизации по умолчанию
     method: str = "black_litterman",  # or "markowitz"
     max_weight: float = 0.4,
-    risk_free_rate: float = 0.005  # Снижено с 0.02 до 0.005 для соответствия текущим низким доходностям
+    risk_free_rate: float = 0.005  # Низкое значение соответствует текущим рыночным ставкам
 ) -> Dict:
     """
     Optimizes a portfolio based on a given market snapshot.
 
     Args:
-        snapshot_id: The ID of the market snapshot to use.
+        tickers: List of tickers to optimize with. If provided, only these tickers will be used.
+        snapshot_id: The ID of the market snapshot to use. If None, the latest snapshot is used.
         risk_aversion: Risk aversion coefficient. Used for market-implied prior in Black-Litterman.
         method: Optimization method, either "black_litterman" or "markowitz".
         max_weight: Maximum weight for any single asset in the portfolio (0 to 1).
@@ -33,7 +36,17 @@ def optimize_tool(
         Returns a dictionary with an 'error' key if optimization fails.
     """
     registry = SnapshotRegistry()
-    snapshot = registry.load(snapshot_id)
+    
+    # Если snapshot_id не указан, используем последний снэпшот
+    if not snapshot_id:
+        snapshot = registry.latest()
+        if snapshot:
+            snapshot_id = snapshot.meta.id
+        else:
+            logger.error("No snapshots found in registry.")
+            return {"error": "No snapshots found", "weights": None, "exp_ret": None, "risk": None, "sharpe": None, "snapshot_id": None}
+    else:
+        snapshot = registry.load(snapshot_id)
 
     if not snapshot:
         logger.error(f"Snapshot with id '{snapshot_id}' not found.")
@@ -41,17 +54,61 @@ def optimize_tool(
 
     logger.info(f"Optimizing portfolio with method '{method}' using snapshot '{snapshot_id}'.")
 
+    # Проверяем доступность тикеров
+    models_path = Path(__file__).absolute().parent.parent.parent.parent / "models"
+    
+    # Получаем список доступных тикеров из директории с моделями
+    available_tickers = []
+    for model_file in models_path.glob("catboost_*.cbm"):
+        ticker = model_file.stem.replace("catboost_", "")
+        if ticker:
+            available_tickers.append(ticker)
+    
+    logger.info(f"Доступно {len(available_tickers)} тикеров для оптимизации")
+    
+    # Если предоставлен список тикеров, проверяем их наличие
+    if tickers:
+        valid_tickers = [t for t in tickers if t in available_tickers]
+        invalid_tickers = [t for t in tickers if t not in available_tickers]
+        
+        if invalid_tickers:
+            logger.warning(f"Следующие тикеры недоступны: {invalid_tickers}")
+            if not valid_tickers:
+                return {
+                    "error": f"Ни один из указанных тикеров не доступен для оптимизации. Используйте доступные тикеры.",
+                    "weights": None,
+                    "exp_ret": None,
+                    "risk": None,
+                    "sharpe": None,
+                    "snapshot_id": snapshot_id
+                }
+    
     # Extract data from snapshot
     mu_dict = snapshot.mu
     sigma_dict = snapshot.sigma
     
-    # Consistent asset order
-    # Ensure all assets in mu are in sigma and vice-versa, or handle missing ones.
-    # For simplicity, assume snapshot is well-formed and mu keys cover main assets in sigma.
-    assets = list(mu_dict.keys())
-    if not assets:
-        logger.error(f"No assets found in mu for snapshot '{snapshot_id}'.")
-        return {"error": "No assets in snapshot mu", "weights": None, "exp_ret": None, "risk": None, "sharpe": None, "snapshot_id": snapshot_id}
+    # Фильтруем только доступные тикеры
+    available_mu_tickers = [t for t in mu_dict.keys() if t in available_tickers]
+    logger.info(f"В снэпшоте найдено {len(available_mu_tickers)} доступных тикеров")
+    
+    if tickers:
+        # Если указаны конкретные тикеры, используем их пересечение с доступными
+        assets = [t for t in tickers if t in available_mu_tickers]
+        logger.info(f"Из {len(tickers)} указанных тикеров доступно {len(assets)} в снэпшоте и моделях")
+    else:
+        # Иначе используем все доступные тикеры из снэпшота
+        assets = available_mu_tickers
+    
+    if not assets or len(assets) < 3:
+        logger.error(f"Недостаточно доступных тикеров для оптимизации: {len(assets) if assets else 0}")
+        return {
+            "error": f"Требуется минимум 3 доступных тикера для оптимизации, найдено {len(assets) if assets else 0}",
+            "weights": None,
+            "exp_ret": None,
+            "risk": None,
+            "sharpe": None,
+            "snapshot_id": snapshot_id
+        }
 
     try:
         # Convert mu to Series and sigma to DataFrame

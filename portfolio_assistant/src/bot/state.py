@@ -1,7 +1,8 @@
 import json
 import redis
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 import logging
+from datetime import datetime, timezone
 
 from .config import REDIS_URL
 
@@ -82,7 +83,8 @@ def create_default_state(user_id: int) -> Dict[str, Any]:
         "budget": 10000,  # Значение по умолчанию 10,000 USD
         "positions": {},  # Пустой портфель по умолчанию
         "last_snapshot_id": None,  # Будет заполнено при первом запросе снапшота
-        "dialog_memory": []  # Пустая история диалога
+        "dialog_memory": [],  # Пустая история диалога
+        "portfolio_history": []  # История портфельных позиций
     }
 
 def update_dialog_memory(user_id: int, message: str, role: str = "user") -> bool:
@@ -208,4 +210,101 @@ def update_snapshot_id(user_id: int, snapshot_id: str) -> bool:
         return save_user_state(user_id, state)
     except Exception as e:
         logger.error(f"Error updating snapshot ID: {str(e)}")
-        return False 
+        return False
+
+def save_portfolio_snapshot(user_id: int, snapshot_name: str = None) -> bool:
+    """
+    Сохраняет текущие позиции пользователя в историю портфеля.
+    
+    Args:
+        user_id: ID пользователя в Telegram
+        snapshot_name: Опциональное имя снэпшота портфеля
+        
+    Returns:
+        True при успешном сохранении, False при ошибке
+    """
+    try:
+        state = get_user_state(user_id)
+        current_positions = state.get("positions", {})
+        
+        if not current_positions:
+            logger.warning(f"Attempted to save empty portfolio for user {user_id}")
+            return False
+            
+        # Получаем данные о текущих ценах для расчета стоимости
+        from ..market_snapshot.registry import SnapshotRegistry
+        registry = SnapshotRegistry()
+        latest_snapshot = registry.latest()
+        
+        # Установка цен по умолчанию (100 за единицу)
+        default_price = 100.0
+        prices = {}
+        
+        # Безопасное получение цен из снапшота
+        try:
+            if latest_snapshot:
+                if hasattr(latest_snapshot, 'prices') and latest_snapshot.prices:
+                    prices = latest_snapshot.prices
+                    logger.info(f"Got prices from snapshot for {len(prices)} tickers")
+        except Exception as price_error:
+            logger.warning(f"Error getting prices from snapshot: {price_error}")
+        
+        # Рассчитываем стоимость портфеля
+        portfolio_value = 0
+        position_values = {}
+        
+        for ticker, amount in current_positions.items():
+            # Безопасное получение цены с обработкой всех возможных ошибок
+            try:
+                price = prices.get(ticker)
+                if price is None or not isinstance(price, (int, float)):
+                    price = default_price
+                    logger.debug(f"Using default price {default_price} for {ticker}")
+            except Exception:
+                price = default_price
+                logger.debug(f"Error getting price for {ticker}, using default price {default_price}")
+                
+            value = float(amount) * float(price)
+            portfolio_value += value
+            position_values[ticker] = value
+        
+        # Создаем снимок портфеля
+        timestamp = datetime.now(timezone.utc)
+        portfolio_snapshot = {
+            "timestamp": timestamp.isoformat(),
+            "name": snapshot_name or f"Portfolio {timestamp.strftime('%Y-%m-%d')}",
+            "positions": current_positions.copy(),
+            "position_values": position_values,
+            "portfolio_value": portfolio_value,
+            "snapshot_id": state.get("last_snapshot_id")
+        }
+        
+        # Добавляем снимок в историю портфеля
+        if "portfolio_history" not in state:
+            state["portfolio_history"] = []
+        
+        state["portfolio_history"].append(portfolio_snapshot)
+        
+        # Сохраняем обновленное состояние
+        return save_user_state(user_id, state)
+    
+    except Exception as e:
+        logger.error(f"Error saving portfolio snapshot: {str(e)}")
+        return False
+
+def get_portfolio_history(user_id: int) -> List[Dict[str, Any]]:
+    """
+    Получает историю портфеля пользователя.
+    
+    Args:
+        user_id: ID пользователя в Telegram
+        
+    Returns:
+        Список снимков портфеля
+    """
+    try:
+        state = get_user_state(user_id)
+        return state.get("portfolio_history", [])
+    except Exception as e:
+        logger.error(f"Error getting portfolio history: {str(e)}")
+        return [] 

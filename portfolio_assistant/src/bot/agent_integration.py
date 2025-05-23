@@ -30,6 +30,66 @@ logger = logging.getLogger(__name__)
 # Пул исполнителей для асинхронного запуска агента
 _executor = ThreadPoolExecutor(max_workers=4)
 
+# Константы для директорий с моделями
+MODELS_DIR = Path("../models")  # Путь к директории с моделями CatBoost относительно portfolio_assistant
+
+# Кеш для списка доступных тикеров
+_available_tickers_cache = None
+_available_tickers_last_update = None
+
+def get_available_tickers(use_cache: bool = True) -> List[str]:
+    """
+    Получает список доступных тикеров на основе наличия моделей CatBoost.
+    
+    Args:
+        use_cache: Использовать ли кешированный список тикеров (True по умолчанию)
+    
+    Returns:
+        Список тикеров, для которых есть модели
+    """
+    global _available_tickers_cache, _available_tickers_last_update
+    
+    # Если есть кешированный список и запрошено использование кеша
+    current_time = datetime.now(timezone.utc)
+    if use_cache and _available_tickers_cache is not None and _available_tickers_last_update is not None:
+        # Проверяем, не устарел ли кеш (используем кеш до 1 часа)
+        if (current_time - _available_tickers_last_update).total_seconds() < 3600:  # 1 час в секундах
+            logger.debug(f"Используем кеш с {len(_available_tickers_cache)} тикерами")
+            return _available_tickers_cache
+    
+    tickers = []
+    
+    try:
+        # Получаем абсолютный путь к директории models/
+        models_path = Path(__file__).absolute().parent.parent.parent.parent / "models"
+        logger.info(f"Ищу модели в директории: {models_path}")
+        
+        # Смотрим содержимое директории models/
+        files = list(models_path.glob("catboost_*.cbm"))
+        
+        if not files:
+            logger.warning(f"Не найдены файлы моделей в {models_path}")
+            return []
+            
+        logger.info(f"Найдено {len(files)} файлов моделей")
+        
+        for file in files:
+            # Извлекаем имя тикера из имени файла (catboost_AAPL.cbm -> AAPL)
+            ticker = file.stem.replace("catboost_", "")
+            if ticker:
+                tickers.append(ticker)
+                
+        logger.info(f"Доступные тикеры: {', '.join(tickers[:5])}... (всего {len(tickers)})")
+        
+        # Обновляем кеш
+        _available_tickers_cache = tickers
+        _available_tickers_last_update = current_time
+        
+    except Exception as e:
+        logger.error(f"Ошибка при получении списка доступных тикеров: {e}")
+    
+    return tickers
+
 async def run_portfolio_manager(text: str, state: Dict[str, Any]) -> Tuple[str, List[str]]:
     """
     Асинхронно запускает портфельного агента-менеджера.
@@ -68,7 +128,7 @@ def _run_portfolio_manager_sync(text: str, state: Dict[str, Any]) -> Tuple[str, 
         risk_profile = state.get('risk_profile', 'не указан')
         budget = state.get('budget', 0)
         positions = state.get('positions', {})
-        snapshot_id = state.get('snapshot_id')
+        snapshot_id = state.get('last_snapshot_id')
         
         # Получаем историю диалога
         dialog_memory = state.get('dialog_memory', [])
@@ -93,13 +153,25 @@ def _run_portfolio_manager_sync(text: str, state: Dict[str, Any]) -> Tuple[str, 
             latest_snapshot = registry.latest()
             if latest_snapshot:
                 snapshot_id = latest_snapshot.meta.id
-                state['snapshot_id'] = snapshot_id
+                state['last_snapshot_id'] = snapshot_id
         
         if latest_snapshot:
             # Получаем данные о снапшоте
             tickers = getattr(latest_snapshot.meta, "tickers", []) or getattr(latest_snapshot.meta, "asset_universe", [])
             timestamp = getattr(latest_snapshot.meta, "timestamp", None) or getattr(latest_snapshot.meta, "created_at", None)
             snapshot_info = f"Снапшот {snapshot_id} от {timestamp.isoformat()}, содержит {len(tickers)} тикеров"
+        
+        # Получаем список доступных тикеров из моделей CatBoost
+        available_tickers = get_available_tickers()
+        if not available_tickers:
+            logger.warning("Не найдены доступные модели для тикеров")
+        
+        # Группируем тикеры по 5 для лучшей читаемости
+        tickers_chunks = []
+        for i in range(0, len(available_tickers), 5):
+            chunk = available_tickers[i:i+5]
+            tickers_chunks.append(", ".join(chunk))
+        tickers_display = "\n".join(tickers_chunks)
         
         # Формируем базовый контекст для агента
         system_message = f"""
@@ -112,6 +184,13 @@ def _run_portfolio_manager_sync(text: str, state: Dict[str, Any]) -> Tuple[str, 
         
         Доступная информация о рынке:
         - {snapshot_info}
+        
+        Доступные тикеры:
+        {tickers_display}
+        
+        ВАЖНО: Ты можешь работать ТОЛЬКО с указанными выше тикерами, для которых есть предобученные модели CatBoost.
+        Никогда не предлагай тикеры, которых нет в этом списке. Игнорируй любые запросы пользователя на анализ недоступных тикеров.
+        Просто отвечай, что тикер недоступен и лучше будет использовать другие инструменты для большей доходности.
         
         Ты можешь использовать следующие инструменты:
         1. get_forecast - получить прогноз доходности и риска для тикера
@@ -151,7 +230,7 @@ def _run_portfolio_manager_sync(text: str, state: Dict[str, Any]) -> Tuple[str, 
                         "properties": {
                             "ticker": {
                                 "type": "string",
-                                "description": "Тикер акции или ETF (например, AAPL, SPY, BTC-USD)"
+                                "description": f"Тикер акции из доступного списка: {', '.join(available_tickers)}"
                             }
                         },
                         "required": ["ticker"]
@@ -171,7 +250,7 @@ def _run_portfolio_manager_sync(text: str, state: Dict[str, Any]) -> Tuple[str, 
                                 "items": {
                                     "type": "string"
                                 },
-                                "description": "Список тикеров для включения в портфель"
+                                "description": f"Список тикеров для включения в портфель, выбирайте только из доступных: {', '.join(available_tickers)}"
                             },
                             "risk_aversion": {
                                 "type": "number",
@@ -192,7 +271,7 @@ def _run_portfolio_manager_sync(text: str, state: Dict[str, Any]) -> Tuple[str, 
                         "properties": {
                             "ticker": {
                                 "type": "string",
-                                "description": "Тикер акции или ETF"
+                                "description": f"Тикер акции из доступного списка: {', '.join(available_tickers)}"
                             },
                             "window_days": {
                                 "type": "integer",
@@ -216,7 +295,7 @@ def _run_portfolio_manager_sync(text: str, state: Dict[str, Any]) -> Tuple[str, 
                                 "items": {
                                     "type": "string"
                                 },
-                                "description": "Список тикеров для сценария"
+                                "description": f"Список тикеров для сценария, выбирайте только из доступных: {', '.join(available_tickers)}"
                             },
                             "adjustments": {
                                 "type": "object",
@@ -266,26 +345,104 @@ def _run_portfolio_manager_sync(text: str, state: Dict[str, Any]) -> Tuple[str, 
         def get_forecast(ticker: str) -> Dict[str, Any]:
             """Прогнозирует доходность и риск для указанного тикера."""
             logger.info(f"Using forecast_tool for {ticker}")
+            # Проверяем, есть ли такой тикер в доступных
+            if ticker not in available_tickers:
+                return {"error": f"Тикер {ticker} недоступен для прогнозирования"}
             return forecast_tool(ticker, snapshot_id)
         
         def optimize_portfolio(tickers: List[str], risk_aversion: float = 1.0) -> Dict[str, Any]:
             """Оптимизирует портфель на основе указанных тикеров."""
             logger.info(f"Using optimize_tool for {tickers}")
-            return optimize_tool(snapshot_id, risk_aversion=risk_aversion)
+            
+            # Проверяем, что все тикеры из доступного списка
+            valid_tickers = [t for t in tickers if t in available_tickers]
+            if len(valid_tickers) < len(tickers):
+                invalid_tickers = [t for t in tickers if t not in available_tickers]
+                logger.warning(f"Следующие тикеры недоступны и будут исключены: {invalid_tickers}")
+                
+            if len(valid_tickers) < 3:
+                return {"error": "Для оптимизации портфеля требуется минимум 3 доступных тикера", 
+                        "weights": {t: 1.0/len(valid_tickers) for t in valid_tickers}}
+            
+            try:
+                # Получаем последний снапшот
+                registry = SnapshotRegistry()
+                correct_snapshot_id = snapshot_id
+                
+                if not correct_snapshot_id:
+                    # Если ID снэпшота не предоставлен, используем последний
+                    latest_snapshot = registry.latest()
+                    if latest_snapshot:
+                        correct_snapshot_id = latest_snapshot.meta.id
+                    else:
+                        return {"error": "Не удалось найти актуальный снапшот для оптимизации", 
+                                "weights": {t: 1.0/len(valid_tickers) for t in valid_tickers}}
+                
+                logger.info(f"Доступно {len(available_tickers)} тикеров для оптимизации")
+                logger.info(f"Оптимизация портфеля для {len(valid_tickers)} тикеров с использованием снапшота {correct_snapshot_id}")
+                
+                # Вызываем оптимизацию с правильными параметрами
+                return optimize_tool(tickers=valid_tickers, snapshot_id=correct_snapshot_id, risk_aversion=risk_aversion)
+            except Exception as e:
+                logger.error(f"Optimization error: {str(e)}")
+                # В случае ошибки возвращаем равномерное распределение
+                return {"weights": {t: 1.0/len(valid_tickers) for t in valid_tickers},
+                        "exp_ret": None, 
+                        "risk": None,
+                        "sharpe": None,
+                        "error": f"Ошибка оптимизации: {str(e)}"}
         
         def analyze_sentiment(ticker: str, window_days: int = 7) -> Dict[str, Any]:
             """Анализирует новостной сентимент для указанного тикера."""
             logger.info(f"Using sentiment_tool for {ticker}")
+            # Проверяем, есть ли такой тикер в доступных
+            if ticker not in available_tickers:
+                return {"error": f"Тикер {ticker} недоступен для анализа сентимента"}
             return sentiment_tool(ticker, window_days=window_days)
         
         def adjust_scenario(tickers: List[str], adjustments: Dict[str, float]) -> Dict[str, Any]:
             """Создает сценарий с указанными корректировками ожидаемой доходности."""
             logger.info(f"Using scenario_adjust_tool with adjustments {adjustments}")
-            return scenario_adjust_tool(tickers, adjustments, base_snapshot_id=snapshot_id)
+            
+            # Проверяем, что все тикеры из доступного списка
+            valid_tickers = [t for t in tickers if t in available_tickers]
+            if len(valid_tickers) < len(tickers):
+                invalid_tickers = [t for t in tickers if t not in available_tickers]
+                logger.warning(f"Следующие тикеры недоступны и будут исключены: {invalid_tickers}")
+                
+            # Также проверяем корректировки
+            valid_adjustments = {k: v for k, v in adjustments.items() if k in available_tickers}
+            
+            try:
+                # Вызываем инструмент сценарного моделирования с правильными параметрами
+                result = scenario_adjust_tool(
+                    tickers=valid_tickers,
+                    adjustments=valid_adjustments,
+                    base_snapshot_id=snapshot_id
+                )
+                return result
+            except Exception as e:
+                logger.error(f"Error in scenario adjustment: {str(e)}", exc_info=True)
+                return {
+                    "error": f"Ошибка при создании сценария: {str(e)}",
+                    "snapshot_id": None
+                }
         
         def plot_portfolio(weights: Dict[str, float]) -> str:
             """Создает график распределения портфеля и возвращает путь к изображению."""
             logger.info(f"Creating portfolio plot with weights {weights}")
+            
+            # Проверяем, есть ли веса для построения графика
+            if not weights:
+                # Если весов нет, создаем пустой график с сообщением об ошибке
+                with tempfile.NamedTemporaryFile(delete=False, suffix='.png') as tmp_file:
+                    plt.figure(figsize=(10, 6))
+                    plt.text(0.5, 0.5, "Нет данных для визуализации", 
+                            horizontalalignment='center', verticalalignment='center', fontsize=14)
+                    plt.axis('off')
+                    plt.savefig(tmp_file.name)
+                    plt.close()
+                    return tmp_file.name
             
             # Создаем временный файл для графика
             with tempfile.NamedTemporaryFile(delete=False, suffix='.png') as tmp_file:
@@ -306,7 +463,7 @@ def _run_portfolio_manager_sync(text: str, state: Dict[str, Any]) -> Tuple[str, 
         for turn in range(max_turns):
             # Вызываем модель OpenAI
             response = client.chat.completions.create(
-                model="gpt-4-turbo",  # Используем доступную модель
+                model="gpt-4o-mini",  # Используем доступную модель
                 messages=messages,
                 tools=tools,
                 tool_choice="auto"
@@ -317,7 +474,7 @@ def _run_portfolio_manager_sync(text: str, state: Dict[str, Any]) -> Tuple[str, 
             # Добавляем сообщение от ассистента в историю
             messages.append({"role": "assistant", "content": response_message.content or "", "tool_calls": response_message.tool_calls or []})
             
-            # Проверяем, запросил ли ассистент использование инструмента
+            # Проверяем, запрасил ли ассистент использование инструмента
             if response_message.tool_calls:
                 # Для каждого вызова инструмента
                 for tool_call in response_message.tool_calls:
@@ -336,9 +493,56 @@ def _run_portfolio_manager_sync(text: str, state: Dict[str, Any]) -> Tuple[str, 
                         window_days = tool_args.get("window_days", 7)
                         tool_result = analyze_sentiment(tool_args["ticker"], window_days)
                     elif tool_name == "adjust_scenario":
-                        tool_result = adjust_scenario(tool_args["tickers"], tool_args["adjustments"])
+                        # Проверяем наличие необходимых аргументов
+                        if "tickers" not in tool_args:
+                            logger.error("Tool 'adjust_scenario' called without 'tickers' parameter")
+                            tool_result = {
+                                "error": "Отсутствует параметр 'tickers'",
+                                "snapshot_id": None
+                            }
+                        elif "adjustments" not in tool_args and "delta" not in tool_args:
+                            logger.error("Tool 'adjust_scenario' called without 'adjustments' parameter")
+                            # Проверяем другие возможные форматы аргументов
+                            if "ticker" in tool_args and "delta_percent" in tool_args:
+                                # Формат для одного тикера
+                                ticker = tool_args["ticker"]
+                                delta = tool_args["delta_percent"]
+                                adjustments = {ticker: delta}
+                                tool_result = adjust_scenario([ticker], adjustments)
+                            else:
+                                tool_result = {
+                                    "error": "Отсутствуют параметры 'adjustments' или 'delta'",
+                                    "snapshot_id": None
+                                }
+                        else:
+                            # Стандартный формат аргументов
+                            adjustments = tool_args.get("adjustments", {})
+                            if "delta" in tool_args and "ticker" in tool_args:
+                                # Альтернативный формат для одного тикера
+                                ticker = tool_args["ticker"]
+                                delta = tool_args["delta"]
+                                adjustments = {ticker: delta}
+                                
+                            tool_result = adjust_scenario(tool_args["tickers"], adjustments)
                     elif tool_name == "plot_portfolio":
-                        img_path = plot_portfolio(tool_args["weights"])
+                        # Проверка на наличие ключа 'weights' в аргументах
+                        if "weights" not in tool_args:
+                            logger.warning("Tool 'plot_portfolio' called without 'weights' parameter")
+                            empty_result = {"image_path": None, "status": "error", "error": "Отсутствует параметр 'weights'"}
+                            messages.append({
+                                "role": "tool",
+                                "tool_call_id": tool_call.id,
+                                "name": tool_name,
+                                "content": json.dumps(empty_result)
+                            })
+                            continue
+                        
+                        weights = tool_args["weights"]
+                        if not isinstance(weights, dict) or not weights:
+                            logger.warning(f"Tool 'plot_portfolio' called with invalid weights: {weights}")
+                            weights = {"Ошибка": 1.0}
+                        
+                        img_path = plot_portfolio(weights)
                         image_paths.append(img_path)
                         tool_result = {"image_path": img_path, "status": "success"}
                     
@@ -391,16 +595,15 @@ def _build_snapshot_sync() -> str:
         ID нового снапшота
     """
     try:
-        # Список тикеров для обновления
-        # В реальном приложении можно загружать из конфигурации или базы данных
-        tickers = [
-            # Акции США
-            "AAPL", "MSFT", "GOOGL", "AMZN", "META", "TSLA", "NVDA", "JPM", "V", "JNJ",
-            # ETF
-            "SPY", "QQQ", "VTI", "VOO", "VEA", "VWO", "BND", "AGG", 
-            # Криптовалюты
-            "BTC-USD", "ETH-USD"
-        ]
+        # Получаем список доступных тикеров из предобученных моделей
+        available_tickers = get_available_tickers()
+        
+        if not available_tickers:
+            logger.warning("Не найдены доступные модели для тикеров")
+            return "Ошибка: не найдены модели для тикеров. Убедитесь, что директория с моделями (models/) содержит необходимые файлы."
+        
+        # Используем только доступные тикеры для создания снапшота
+        tickers = available_tickers
         
         logger.info(f"Building new snapshot with {len(tickers)} tickers")
         
@@ -434,12 +637,13 @@ def _build_snapshot_sync() -> str:
         for ticker in tickers:
             try:
                 # Загружаем данные для отдельного тикера
+                # С версии 0.2.28 yfinance изменил формат данных и auto_adjust=True по умолчанию
                 ticker_data = yf.download(
                     ticker, 
                     start=start_date.strftime("%Y-%m-%d"), 
                     end=end_date.strftime("%Y-%m-%d"),
                     progress=False,
-                    auto_adjust=True
+                    auto_adjust=True  # С версии 0.2.28 это значение True по умолчанию
                 )
                 
                 # Пропускаем пустые данные
@@ -447,13 +651,40 @@ def _build_snapshot_sync() -> str:
                     logger.warning(f"No data for {ticker}, skipping")
                     continue
                 
-                # Проверяем наличие данных о ценах закрытия
-                if 'Close' not in ticker_data.columns:
-                    logger.warning(f"No 'Close' column for {ticker}, skipping")
-                    continue
+                # Получаем данные о ценах закрытия
+                # В новых версиях yfinance с auto_adjust=True возвращается только 'Close' вместо 'Adj Close'
+                close_column = 'Close'
+                
+                # Проверяем формат данных - обычный DataFrame или MultiIndex 
+                if isinstance(ticker_data.columns, pd.MultiIndex):
+                    # Обрабатываем MultiIndex формат (новая версия yfinance)
+                    # Структура: ('Price', 'Ticker') - например: ('Close', 'AAPL')
+                    try:
+                        close_prices = ticker_data.xs('Close', level=0, axis=1)
+                        # Если это Series (для одного тикера), преобразуем в DataFrame
+                        if isinstance(close_prices, pd.Series):
+                            close_prices = pd.DataFrame(close_prices)
+                        logger.debug(f"Using MultiIndex format for {ticker}")
+                    except Exception as e:
+                        logger.error(f"Error accessing MultiIndex data for {ticker}: {e}")
+                        continue
+                else:
+                    # Обрабатываем обычный DataFrame (старая версия или одиночный тикер)
+                    # Проверяем наличие колонок
+                    if close_column not in ticker_data.columns:
+                        # Пробуем альтернативную колонку
+                        alternative_close = 'Adj Close' if 'Adj Close' in ticker_data.columns else None
+                        if alternative_close:
+                            close_column = alternative_close
+                        else:
+                            logger.warning(f"No price column found for {ticker}, skipping")
+                            continue
+                    
+                    close_prices = ticker_data[close_column]
+                    logger.debug(f"Using standard format with column {close_column} for {ticker}")
                 
                 # Получаем ежедневные логарифмические доходности
-                log_returns = np.log(ticker_data['Close'] / ticker_data['Close'].shift(1)).dropna()
+                log_returns = np.log(close_prices / close_prices.shift(1)).dropna()
                 
                 # Сохраняем для последующего расчета ковариации
                 all_returns[ticker] = log_returns
@@ -463,11 +694,32 @@ def _build_snapshot_sync() -> str:
                 
                 # Рассчитываем ожидаемую месячную доходность (среднее значение)
                 mean_value = monthly_returns.mean()
-                mu[ticker] = float(mean_value.iloc[0]) if hasattr(mean_value, 'iloc') else float(mean_value)
+                # Безопасно получаем значение: для Series или DataFrame
+                if hasattr(mean_value, 'iloc'):
+                    mu_value = float(mean_value.iloc[0])
+                elif isinstance(mean_value, pd.Series):
+                    mu_value = float(mean_value.values[0])  
+                else:
+                    mu_value = float(mean_value)
+                    
+                mu[ticker] = mu_value
                 
                 # Записываем текущую цену
-                close_value = ticker_data['Close'].iloc[-1]
-                prices[ticker] = float(close_value.iloc[0]) if hasattr(close_value, 'iloc') else float(close_value)
+                # Безопасно получаем последнее значение
+                try:
+                    if isinstance(close_prices, pd.DataFrame):
+                        close_value = close_prices.iloc[-1, 0]
+                    elif isinstance(close_prices, pd.Series):
+                        close_value = close_prices.iloc[-1]
+                    else:
+                        close_value = float(ticker_data[close_column].iloc[-1])
+                        
+                    prices[ticker] = float(close_value)
+                    logger.debug(f"Price for {ticker}: ${prices[ticker]:.2f}")
+                except Exception as price_error:
+                    logger.warning(f"Error getting price for {ticker}: {price_error}")
+                    # Ставим цену по умолчанию
+                    prices[ticker] = 100.0
                 
                 # Получаем рыночную капитализацию, если это возможно
                 try:

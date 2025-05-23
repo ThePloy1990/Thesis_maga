@@ -2,11 +2,12 @@ import hashlib
 import json
 from datetime import datetime, timezone
 from typing import Dict, List, Any
+from pathlib import Path
 
 from pydantic import Field, BaseModel, ValidationError
 
-from src.market_snapshot.snapshot import MarketSnapshot, SnapshotMeta
-from src.market_snapshot.snapshot_registry import SnapshotRegistry
+from ..market_snapshot.model import MarketSnapshot, SnapshotMeta
+from ..market_snapshot.registry import SnapshotRegistry
 
 # Pydantic модель для одной корректировки тикера
 class TickerAdjustment(BaseModel):
@@ -104,20 +105,88 @@ def _internal_scenario_adjust_tool_logic(snapshot_id: str, deltas_json_string: s
     registry.save(scenario_snapshot)
     return new_id
 
-# Экспортируем функцию без декоратора, чтобы её можно было вызывать напрямую из тестов.
-def scenario_adjust_tool(snapshot_id: str, deltas_json_string: str) -> str:
+def scenario_adjust_tool(tickers: List[str], adjustments: Dict[str, float], base_snapshot_id: str = None) -> Dict[str, Any]:
     """
-    Adjusts the 'mu' values in a given market snapshot based on a JSON string of ticker adjustments
+    Adjusts the 'mu' values in a given market snapshot based on specified ticker adjustments
     and saves it as a new snapshot.
 
     Args:
-        snapshot_id: The ID of the base market snapshot to use.
-        deltas_json_string: A JSON string representing a list of ticker adjustments.
-                            Each item in the list should be a dictionary containing a 'ticker' (str)
-                            and a 'delta' (float).
-                            Example: '[{"ticker": "AAPL", "delta": -0.01}, {"ticker": "MSFT", "delta": 0.005}]'
+        tickers: List of tickers to include in the scenario (must be available in models)
+        adjustments: Dictionary of adjustments in the form {ticker: delta_percent}
+        base_snapshot_id: ID of the base market snapshot to use. If None, latest snapshot is used.
 
     Returns:
-        The ID of the newly created and saved scenario snapshot.
+        Dictionary with details about the created scenario snapshot
     """
-    return _internal_scenario_adjust_tool_logic(snapshot_id, deltas_json_string)
+    # Проверяем наличие тикеров в списке доступных
+    models_path = Path(__file__).absolute().parent.parent.parent.parent / "models"
+    
+    # Проверяем доступность тикеров из основного списка
+    unavailable_tickers = []
+    for ticker in tickers:
+        model_path = models_path / f"catboost_{ticker}.cbm"
+        if not model_path.exists():
+            unavailable_tickers.append(ticker)
+    
+    if unavailable_tickers:
+        return {
+            "error": f"Следующие тикеры недоступны: {unavailable_tickers}. Используйте только доступные тикеры.",
+            "snapshot_id": None
+        }
+    
+    # Проверяем доступность тикеров из корректировок
+    unavailable_adj_tickers = []
+    for ticker in adjustments.keys():
+        model_path = models_path / f"catboost_{ticker}.cbm"
+        if not model_path.exists():
+            unavailable_adj_tickers.append(ticker)
+    
+    if unavailable_adj_tickers:
+        return {
+            "error": f"Следующие тикеры корректировок недоступны: {unavailable_adj_tickers}. Используйте только доступные тикеры.",
+            "snapshot_id": None
+        }
+    
+    registry = SnapshotRegistry()
+    
+    # Получаем базовый снапшот
+    if base_snapshot_id:
+        original_snapshot = registry.load(base_snapshot_id)
+        if not original_snapshot:
+            return {
+                "error": f"Снапшот с ID {base_snapshot_id} не найден.",
+                "snapshot_id": None
+            }
+    else:
+        original_snapshot = registry.latest()
+        if not original_snapshot:
+            return {
+                "error": "Не удалось найти последний снапшот.",
+                "snapshot_id": None
+            }
+        base_snapshot_id = original_snapshot.meta.id
+    
+    # Формируем список корректировок в формате для внутреннего метода
+    adjustments_list = []
+    for ticker, delta in adjustments.items():
+        adjustments_list.append({
+            "ticker": ticker,
+            "delta": delta / 100.0  # Переводим проценты в десятичную дробь
+        })
+    
+    deltas_json_string = json.dumps(adjustments_list)
+    
+    try:
+        new_snapshot_id = _internal_scenario_adjust_tool_logic(base_snapshot_id, deltas_json_string)
+        return {
+            "snapshot_id": new_snapshot_id,
+            "base_snapshot_id": base_snapshot_id,
+            "tickers": tickers,
+            "adjustments": adjustments,
+            "error": None
+        }
+    except Exception as e:
+        return {
+            "error": f"Ошибка при создании сценария: {str(e)}",
+            "snapshot_id": None
+        }

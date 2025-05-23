@@ -9,8 +9,8 @@ import numpy as np
 import pandas_ta as ta
 from catboost import CatBoostRegressor
 
-from src.market_snapshot.registry import SnapshotRegistry
-from src.market_snapshot.model import MarketSnapshot # Assuming this might be needed if we enhance snapshot interaction
+from ..market_snapshot.registry import SnapshotRegistry
+from ..market_snapshot.model import MarketSnapshot
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +23,8 @@ FEATURE_COLUMNS = [
     'VOL_21D', 'RSI_14'
 ]
 
-MODELS_DIR = Path("models") # Assuming models directory is at the project root
+# Константы для директорий с моделями
+MODELS_DIR = Path(__file__).absolute().parent.parent.parent.parent / "models"  # Абсолютный путь к директории с моделями CatBoost
 
 
 def _calculate_features(df: pd.DataFrame, ticker: str) -> Optional[pd.DataFrame]:
@@ -35,11 +36,17 @@ def _calculate_features(df: pd.DataFrame, ticker: str) -> Optional[pd.DataFrame]
         logger.warning(f"Insufficient data for {ticker} to calculate all features (need at least 60 days, got {len(df)}).")
         return None
 
-    # Use Adj Close for calculations
-    adj_close = df['Adj Close']
+    # Определяем, какую колонку использовать - 'Close' или 'Adj Close'
+    # С версии yfinance 0.2.28 auto_adjust=True по умолчанию и возвращается только 'Close'
+    price_column = 'Close'
+    if 'Adj Close' in df.columns:
+        price_column = 'Adj Close'
+        
+    logger.debug(f"Using price column {price_column} for {ticker}")
+    prices = df[price_column]
 
     # Log returns
-    log_returns = np.log(adj_close / adj_close.shift(1))
+    log_returns = np.log(prices / prices.shift(1))
     df['log_ret'] = log_returns
 
     features = pd.DataFrame(index=[df.index[-1]]) # Single row for the last day
@@ -103,6 +110,17 @@ def forecast_tool(
         A dictionary with "mu", "sigma", and "snapshot_id" (which could be None).
         Example: {"mu": 0.032, "sigma": 0.0049, "snapshot_id": "2023-01-01T12-00-00Z"}
     """
+    # Проверяем существование модели для данного тикера
+    model_path = MODELS_DIR / f"catboost_{ticker}.cbm"
+    if not model_path.exists():
+        logger.warning(f"Модель для тикера {ticker} не найдена в {MODELS_DIR}")
+        return {
+            "mu": None, 
+            "sigma": None, 
+            "snapshot_id": None, 
+            "error": f"Тикер {ticker} недоступен: модель не найдена"
+        }
+    
     registry = SnapshotRegistry() # Consider dependency injection for better testability
 
     if snapshot_id:
@@ -189,7 +207,14 @@ def forecast_tool(
             logger.error(f"No risk data for {ticker} from yfinance.")
             return {"mu": mu_hat, "sigma": None, "snapshot_id": None, "error": f"No yfinance risk data for {ticker}"}
 
-        daily_log_returns_risk = np.log(risk_data_ohlcv['Adj Close'] / risk_data_ohlcv['Adj Close'].shift(1)).dropna()
+        # Определяем, какую колонку использовать - 'Close' или 'Adj Close'
+        price_column = 'Close'
+        if 'Adj Close' in risk_data_ohlcv.columns:
+            price_column = 'Adj Close'
+        
+        logger.debug(f"Using price column {price_column} for risk calculation for {ticker}")
+        
+        daily_log_returns_risk = np.log(risk_data_ohlcv[price_column] / risk_data_ohlcv[price_column].shift(1)).dropna()
         if len(daily_log_returns_risk) < 21:
              logger.warning(f"Not enough risk data points for {ticker} after processing ({len(daily_log_returns_risk)} found)")
              sigma_hat = np.nan # Or some default high variance

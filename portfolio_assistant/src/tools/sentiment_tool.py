@@ -3,6 +3,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any
 import json
+from pathlib import Path
 
 import torch
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
@@ -124,7 +125,7 @@ def _calculate_sentiment_score(headlines: List[str]) -> float:
     return sum(sentiment_scores) / len(sentiment_scores)
 
 
-def sentiment_tool(ticker: str, window_days: int = 3) -> float:
+def sentiment_tool(ticker: str, window_days: int = 3) -> Dict[str, Any]:
     """
     Calculates the sentiment score for a given ticker based on recent news headlines.
 
@@ -136,13 +137,28 @@ def sentiment_tool(ticker: str, window_days: int = 3) -> float:
         window_days: The number of past days to fetch news for (default is 3).
 
     Returns:
-        A float representing the sentiment score, ranging from -1 (very negative)
-        to 1 (very positive). Returns 0.0 if no news or error.
+        A dictionary with sentiment score and metadata.
+        Example: {"score": 0.75, "articles_count": 10, "error": None}
     """
+    # Проверяем существование модели для данного тикера
+    models_path = Path(__file__).absolute().parent.parent.parent.parent / "models"
+    model_path = models_path / f"catboost_{ticker}.cbm"
+    if not model_path.exists():
+        logger.warning(f"Модель для тикера {ticker} не найдена в {models_path}")
+        return {
+            "score": 0.0,
+            "articles_count": 0,
+            "error": f"Тикер {ticker} недоступен: модель не найдена"
+        }
+
     if not NEWSAPI_KEY:
         logger.warning("NEWSAPI_KEY is not set. Sentiment tool cannot fetch news.")
         # Можно вернуть ошибку или нейтральное значение
-        # return 0.0 # В зависимости от требований, может быть лучше вызвать исключение
+        return {
+            "score": 0.0,
+            "articles_count": 0,
+            "error": "API ключ для новостей не настроен. Анализ настроений недоступен."
+        }
 
     # Инициализация клиентов (ленивая)
     _get_tokenizer_model() # Загружаем модель заранее, если еще не загружена
@@ -152,10 +168,19 @@ def sentiment_tool(ticker: str, window_days: int = 3) -> float:
 
     if redis_cli:
         try:
-            cached_score = redis_cli.get(cache_key)
-            if cached_score is not None:
-                logger.info(f"Returning cached sentiment for '{ticker}' (window: {window_days} days): {cached_score}")
-                return float(cached_score)
+            cached_result = redis_cli.get(cache_key)
+            if cached_result is not None:
+                logger.info(f"Returning cached sentiment for '{ticker}' (window: {window_days} days)")
+                try:
+                    result = json.loads(cached_result)
+                    return result
+                except json.JSONDecodeError:
+                    # Если в кэше не словарь, а просто число (обратная совместимость)
+                    return {
+                        "score": float(cached_result),
+                        "articles_count": 0,
+                        "error": None
+                    }
         except redis.exceptions.RedisError as e:
             logger.error(f"Redis GET error for key {cache_key}: {e}. Proceeding without cache.")
             # Не перевыбрасываем, чтобы продолжить без кэша
@@ -171,21 +196,28 @@ def sentiment_tool(ticker: str, window_days: int = 3) -> float:
     
     if not headlines:
         logger.info(f"No relevant headlines found for '{ticker}' in the last {window_days} days.")
-        # Кэшируем отсутствие данных как 0.0, чтобы избежать повторных запросов к API
-        # если это желаемое поведение.
-        final_score = 0.0
+        final_result = {
+            "score": 0.0,
+            "articles_count": 0,
+            "error": f"Не найдены новости для тикера {ticker} за последние {window_days} дней."
+        }
     else:
         final_score = _calculate_sentiment_score(headlines)
+        final_result = {
+            "score": final_score,
+            "articles_count": len(headlines),
+            "error": None
+        }
 
     if redis_cli:
         try:
-            redis_cli.setex(cache_key, CACHE_TTL_SECONDS, final_score)
-            logger.info(f"Cached sentiment for '{ticker}' (window: {window_days} days): {final_score}")
+            redis_cli.setex(cache_key, CACHE_TTL_SECONDS, json.dumps(final_result))
+            logger.info(f"Cached sentiment for '{ticker}' (window: {window_days} days)")
         except redis.exceptions.RedisError as e:
             logger.error(f"Redis SETEX error for key {cache_key}: {e}.")
             # Не перевыбрасываем, ошибка кэширования не должна ломать основную логику
 
-    return final_score
+    return final_result
 
 if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO)

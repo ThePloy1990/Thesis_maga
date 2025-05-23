@@ -28,10 +28,14 @@ from src.bot.handlers import (
     positions_command,
     snapshot_command,
     update_command,
+    update_all_command,
     reset_command,
     message_handler,
     callback_handler,
-    error_handler
+    error_handler,
+    tickers_command,
+    accept_command,
+    performance_command
 )
 
 # Настройка логирования
@@ -59,7 +63,11 @@ def main() -> None:
     application.add_handler(CommandHandler("positions", positions_command))
     application.add_handler(CommandHandler("snapshot", snapshot_command))
     application.add_handler(CommandHandler("update", update_command))
+    application.add_handler(CommandHandler("updateall", update_all_command))
     application.add_handler(CommandHandler("reset", reset_command))
+    application.add_handler(CommandHandler("tickers", tickers_command))
+    application.add_handler(CommandHandler("accept", accept_command))
+    application.add_handler(CommandHandler("performance", performance_command))
     
     # Регистрируем обработчик для callback-запросов (inline-кнопки)
     application.add_handler(CallbackQueryHandler(callback_handler))
