@@ -35,7 +35,8 @@ from src.bot.handlers import (
     error_handler,
     tickers_command,
     accept_command,
-    performance_command
+    performance_command,
+    streamlit_command
 )
 
 # Настройка логирования
@@ -68,6 +69,7 @@ def main() -> None:
     application.add_handler(CommandHandler("tickers", tickers_command))
     application.add_handler(CommandHandler("accept", accept_command))
     application.add_handler(CommandHandler("performance", performance_command))
+    application.add_handler(CommandHandler("streamlit", streamlit_command))
     
     # Регистрируем обработчик для callback-запросов (inline-кнопки)
     application.add_handler(CallbackQueryHandler(callback_handler))

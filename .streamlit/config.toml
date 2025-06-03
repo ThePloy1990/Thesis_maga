@@ -1,0 +1,74 @@
+[global]
+
+# If false, makes your Streamlit app have a  wide mode as the default setting
+wideMode = true
+
+# Disables the hamburger menu on the top right
+hideMainMenu = true
+
+# Disables the "Fork" button
+hideForkButton = true
+
+# Disables the footer
+hideFooter = true
+
+[theme]
+# Primary accent color for interactive elements.
+primaryColor = "#FF6B6B"
+
+# Background color for the main content area.
+backgroundColor = "#FFFFFF"
+
+# Background color used for the sidebar and most interactive widgets.
+secondaryBackgroundColor = "#F0F2F6"
+
+# Color used for almost all text.
+textColor = "#262730"
+
+# Font family for all text in the app
+font = "sans serif"
+
+[client]
+# Whether to enable live theme editing on ?embed=true iframe usage
+caching = true
+
+# If true, will show a warning when the app is accessed on localhost
+showWarningOnDirectExecution = false
+
+[server]
+# List of folders that should not be watched for changes.
+folderWatchBlacklist = ['']
+
+# Change the type of file watcher used by Streamlit
+fileWatcherType = "auto"
+
+# Symmetric key used to produce signed cookies. If deploying on multiple replicas, this should be set to the same value across all replicas to ensure they all share the same secret.
+cookieSecret = "a-random-key-here"
+
+# If false, will attempt to open a browser window on start.
+headless = false
+
+# Automatically rerun script when the file is modified on disk.
+runOnSave = true
+
+# The address where the server will listen for client and browser connections.
+address = "localhost"
+
+# The port where the server will listen for client and browser connections.
+port = 8501
+
+# Enables support for Cross-Origin Resource Sharing (CORS) protection, for added security.
+enableCORS = true
+
+# Enables support for Cross-Site Request Forgery (XSRF) protection, for added security.
+enableXsrfProtection = false
+
+[browser]
+# Internet address where users should point their browsers in order to connect to the app.
+serverAddress = "localhost"
+
+# Whether to send usage statistics to Streamlit.
+gatherUsageStats = false
+
+# Configure the ability to share apps to the cloud.
+serverPort = 8501 

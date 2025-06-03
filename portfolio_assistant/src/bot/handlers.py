@@ -4,11 +4,11 @@ import re
 from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime
 
-from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
+from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
 from telegram.constants import ParseMode
 from telegram.ext import CallbackContext, ContextTypes
 
-from .config import DISCLAIMER
+from .config import DISCLAIMER, STREAMLIT_URL
 from .state import (
     get_user_state,
     save_user_state,
@@ -40,57 +40,250 @@ logger = logging.getLogger(__name__)
 
 # Справочная информация
 START_MESSAGE = """
-*Привет! Я ваш AI-портфельный ассистент* 🚀
+🤖 *Добро пожаловать в AI Portfolio Assistant!*
 
-Я помогу вам с:
-• Построением оптимального инвестиционного портфеля
-• Анализом финансовых активов
-• Сценарным моделированием
+Я ваш персональный помощник для управления инвестиционным портфелем. Использую передовые технологии машинного обучения для анализа рынка и оптимизации инвестиций.
 
-*Основные команды:*
-/help - Подробная справка
-/risk - Установить ваш риск-профиль
-/budget - Установить бюджет
-/positions - Задать текущие позиции
-/snapshot - Информация о текущих данных
-/update - Обновить рыночные данные
+🎯 *Что я умею:*
+• 📊 Анализировать более 60 финансовых активов
+• ⚡ Создавать оптимальные портфели (HRP, Mean-Variance)
+• 🔮 Прогнозировать доходность на 3 месяца вперед
+• 📈 Анализировать производительность и риски
+• 🎪 Моделировать различные сценарии
+• 📱 Интегрироваться с веб-интерфейсом
+• 💬 Общаться на естественном языке
+• 💡 Учитывать и анализировать новосной сентимент
 
-*Примеры запросов:*
-"Собери портфель из AAPL, MSFT и BTC на 1 месяц"
-"Что думаешь про Tesla?"
-"Поменяй прогноз по BTC на +5%"
+🚀 *Быстрый старт:*
+/streamlit - Открыть веб-интерфейс с графиками
+/help - Все команды и возможности
+/risk moderate - Установить ваш риск-профиль
+/budget 10000 - Указать инвестиционный бюджет
+
+💡 *Пример запроса:*
+"Создай портфель из AAPL, MSFT, GOOGL на $50,000"
+
+🌐 *Веб-интерфейс:* Используйте `/streamlit` для получения ссылки на полнофункциональный интерфейс с интерактивными графиками!
 """
 
 HELP_MESSAGE = """
-*Список команд:*
+📖 *СПРАВОЧНИК AI PORTFOLIO ASSISTANT*
 
-📋 *Основные команды:*
-/start - Начало работы
-/help - Эта справка
-/reset - Сбросить настройки и контекст
+═══════════════════════════
 
-⚙️ *Настройки:*
-/risk `conservative/moderate/aggressive` - Установить риск-профиль
-/budget `10000` - Установить бюджет в USD (до 1 млн)
-/positions - Задать текущие позиции (можно с JSON)
+🎯 *ОСНОВНЫЕ КОМАНДЫ*
 
-📊 *Снапшоты:*
-/snapshot - Информация о текущем снапшоте
-/update - Обновить данные о рынке
-/tickers - Показать список всех доступных тикеров
+🏠 `/start` - Приветствие и быстрый старт
+❓ `/help` - Эта подробная справка  
+🌐 `/streamlit` - Ссылка на веб-интерфейс с графиками
+🔄 `/reset` - Сбросить все настройки и контекст
 
-📈 *Портфель:*
-/accept [имя] - Зафиксировать текущий портфель для отслеживания
-/performance - Показать изменение портфеля со времени первой фиксации
+═══════════════════════════
 
-*Примеры запросов:*
-• "Собери портфель из AAPL, MSFT и BTC"
-• "Расскажи о перспективах Tesla"
-• "Сделай сценарий с ростом AAPL на 10%"
-• "Какой коэффициент Шарпа у моего портфеля?"
-• "Покажи эффективную границу для моих активов"
-• "Обнови позиции" - применяет последнее предложение по портфелю
+⚙️ *ПЕРСОНАЛЬНЫЕ НАСТРОЙКИ*
+
+🎲 `/risk` `conservative/moderate/aggressive`
+   Установить ваш профиль риска
+
+💰 `/budget` `50000`
+   Указать инвестиционный бюджет (в USD)
+
+📊 `/positions` `{"AAPL": 100, "MSFT": 50}`
+   Задать текущие позиции в JSON формате
+
+═══════════════════════════
+
+📈 *АНАЛИЗ ДАННЫХ*
+
+📸 `/snapshot` - Информация о текущих рыночных данных
+🔄 `/update` - Обновить снапшот с реальными данными
+🏷️ `/tickers` - Показать все доступные тикеры (~60)
+
+═══════════════════════════
+
+🎯 *ПОРТФЕЛЬНЫЙ АНАЛИЗ*
+
+✅ `/accept` `[название]` - Зафиксировать текущий портфель
+📊 `/performance` - Сравнить изменения портфеля во времени
+
+═══════════════════════════
+
+💬 *ПРИМЕРЫ ЗАПРОСОВ*
+
+• "Создай консервативный портфель из топ-10 S&P 500"
+• "Оптимизируй мой портфель под 15% годовых"
+• "Проанализируй риски портфеля с Tesla и Apple" 
+• "Покажи эффективную границу для технологических акций"
+• "Сделай сценарий с ростом NVDA на 20%"
+• "Какова корреляция между BTC и золотом?"
+
+═══════════════════════════
+
+🔄 *БЫСТРЫЕ ДЕЙСТВИЯ*
+
+📝 "Обнови позиции" - применить последний портфель
+⚡ "Применить портфель" - использовать созданные веса
+🎯 "Ребалансировка" - пересчитать оптимальное распределение
+
+═══════════════════════════
+
+🌟 *ПРОДВИНУТЫЕ ВОЗМОЖНОСТИ*
+
+🤖 **AI-анализ**: Используются модели CatBoost для прогнозирования
+📊 **Методы оптимизации**: HRP, Mean-Variance, Risk Parity
+⏰ **Горизонт прогнозов**: 3 месяца (квартальные)
+📈 **Метрики**: Коэффициент Шарпа, Alpha, Beta, VaR
+🌐 **Веб-интерфейс**: Полнофункциональный Streamlit с графиками
+
+═══════════════════════════
+
+💡 *СОВЕТЫ*
+
+• Начните с команды `/streamlit` для визуального интерфейса
+• Установите риск-профиль и бюджет для персонализации
+• Используйте `/tickers` чтобы узнать доступные активы
+• Фиксируйте портфели через `/accept` для отслеживания
+• Команда `/performance` покажет изменения во времени
+
+🎉 *Удачных инвестиций!*
 """
+
+def _extract_portfolio_from_text(text: str, user_budget: float = 10000.0, snapshot_prices: Dict[str, float] = None) -> Dict[str, float]:
+    """
+    Извлекает информацию о портфеле (тикеры и веса) из текста ответа модели и
+    конвертирует проценты в реальное количество акций на основе бюджета и цен.
+    
+    Args:
+        text: Текст ответа модели содержащий информацию о портфеле
+        user_budget: Бюджет пользователя в USD
+        snapshot_prices: Словарь с текущими ценами акций {ticker: price}
+        
+    Returns:
+        Словарь {ticker: количество_акций} с позициями портфеля
+    """
+    portfolio_data = {}
+    
+    try:
+        # Метод 1: Поиск таблицы в Markdown формате
+        # Ищем строки вида: | TICKER | Company Name | 6.55% |
+        table_pattern = r'\|\s*([A-Z]{1,5})\s*\|[^|]*\|\s*(\d+\.?\d*)%?\s*\|'
+        table_matches = re.findall(table_pattern, text)
+        
+        if table_matches:
+            logger.info(f"Found {len(table_matches)} tickers in table format")
+            for ticker, percentage_str in table_matches:
+                percentage = float(percentage_str)
+                
+                # Вычисляем сумму для этого актива
+                allocation_amount = user_budget * (percentage / 100.0)
+                
+                # Получаем цену акции
+                if snapshot_prices and ticker in snapshot_prices:
+                    stock_price = snapshot_prices[ticker]
+                else:
+                    # Если цены нет, используем базовую цену $100
+                    stock_price = 100.0
+                    logger.warning(f"No price found for {ticker}, using default $100")
+                
+                # Вычисляем количество акций
+                shares_count = allocation_amount / stock_price
+                portfolio_data[ticker] = shares_count
+                
+                logger.info(f"{ticker}: {percentage}% of ${user_budget} = ${allocation_amount:.2f} / ${stock_price:.2f} = {shares_count:.4f} shares")
+        
+        # Метод 2: Поиск в тексте формата "TICKER: percentage%"
+        if not portfolio_data:
+            text_pattern = r'([A-Z]{1,5})[\s\-:]+(\d+\.?\d*)%'
+            text_matches = re.findall(text_pattern, text)
+            
+            if text_matches:
+                logger.info(f"Found {len(text_matches)} tickers in text format")
+                for ticker, percentage_str in text_matches:
+                    percentage = float(percentage_str)
+                    allocation_amount = user_budget * (percentage / 100.0)
+                    
+                    if snapshot_prices and ticker in snapshot_prices:
+                        stock_price = snapshot_prices[ticker]
+                    else:
+                        stock_price = 100.0
+                        logger.warning(f"No price found for {ticker}, using default $100")
+                    
+                    shares_count = allocation_amount / stock_price
+                    portfolio_data[ticker] = shares_count
+        
+        # Метод 3: Поиск просто тикеров и присвоение равных весов
+        if not portfolio_data:
+            # Ищем все тикеры в тексте
+            ticker_pattern = r'\b([A-Z]{2,5})\b'
+            all_tickers = re.findall(ticker_pattern, text)
+            
+            # Фильтруем очевидно не-тикеры
+            exclude_words = {'USD', 'API', 'CEO', 'ETF', 'IPO', 'NYSE', 'GDP', 'CPI', 'ROI', 'KPI', 'HR', 'IT', 'AI', 'ML', 'UI', 'UX'}
+            valid_tickers = [ticker for ticker in set(all_tickers) if ticker not in exclude_words and len(ticker) <= 5]
+            
+            if valid_tickers:
+                logger.info(f"Found {len(valid_tickers)} tickers, assigning equal weights")
+                equal_percentage = 100.0 / len(valid_tickers)
+                
+                for ticker in valid_tickers:
+                    allocation_amount = user_budget * (equal_percentage / 100.0)
+                    
+                    if snapshot_prices and ticker in snapshot_prices:
+                        stock_price = snapshot_prices[ticker]
+                    else:
+                        stock_price = 100.0
+                        logger.warning(f"No price found for {ticker}, using default $100")
+                    
+                    shares_count = allocation_amount / stock_price
+                    portfolio_data[ticker] = shares_count
+    
+    except Exception as e:
+        logger.error(f"Error extracting portfolio from text: {e}")
+    
+    # Проверяем что получили разумные данные
+    if portfolio_data:
+        # Убираем тикеры с очень маленькими количествами (менее 0.01 акции)
+        portfolio_data = {ticker: amount for ticker, amount in portfolio_data.items() if amount >= 0.01}
+        
+        # Логируем итоговое распределение
+        total_value = 0
+        for ticker, shares in portfolio_data.items():
+            price = snapshot_prices.get(ticker, 100.0) if snapshot_prices else 100.0
+            value = shares * price
+            total_value += value
+            logger.info(f"Final: {ticker} = {shares:.4f} shares × ${price:.2f} = ${value:.2f}")
+        
+        logger.info(f"Total portfolio value: ${total_value:.2f} (budget: ${user_budget:.2f})")
+    
+    return portfolio_data
+
+def get_main_keyboard() -> ReplyKeyboardMarkup:
+    """
+    Создает основную клавиатуру для быстрого доступа к функциям бота.
+    
+    Returns:
+        ReplyKeyboardMarkup с основными командами
+    """
+    keyboard = [
+        [
+            KeyboardButton("🌐 Веб-интерфейс"),
+            KeyboardButton("📖 Справка")
+        ],
+        [
+            KeyboardButton("🔄 Обновить данные"),
+            KeyboardButton("🏷️ Тикеры")
+        ],
+        [
+            KeyboardButton("📊 Статус данных"),
+            KeyboardButton("⚙️ Настройки")
+        ]
+    ]
+    return ReplyKeyboardMarkup(
+        keyboard, 
+        resize_keyboard=True, 
+        one_time_keyboard=False,
+        input_field_placeholder="Введите ваш запрос или выберите команду..."
+    )
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
@@ -103,16 +296,40 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     user_id = update.effective_user.id
     logger.info(f"User {user_id} started the bot")
     
-    # Получаем информацию о снапшоте
-    snapshot_info = await get_latest_snapshot_info()
-    
     message = START_MESSAGE
-    if snapshot_info.get("snapshot_id"):
-        message += f"\n\n*Текущий снапшот:* `{snapshot_info['snapshot_id']}`"
-        message += f"\n*Дата:* `{snapshot_info['timestamp']}`"
     
-    # Отправляем приветственное сообщение
-    await send_markdown(update, context, message, add_disclaimer=False)
+    # Создаем inline-клавиатуру с быстрыми действиями
+    inline_keyboard = [
+        [
+            InlineKeyboardButton("🌐 Веб-интерфейс", callback_data="action=get_streamlit"),
+            InlineKeyboardButton("📖 Справка", callback_data="action=get_help")
+        ],
+        [
+            InlineKeyboardButton("🔄 Обновить данные", callback_data="action=update_snapshot"),
+            InlineKeyboardButton("🏷️ Тикеры", callback_data="action=show_tickers")
+        ]
+    ]
+    inline_reply_markup = InlineKeyboardMarkup(inline_keyboard)
+    
+    # Получаем постоянную клавиатуру
+    main_keyboard = get_main_keyboard()
+    
+    # Отправляем приветственное сообщение с кнопками
+    await send_markdown(
+        update, 
+        context, 
+        message, 
+        add_disclaimer=False, 
+        reply_markup=inline_reply_markup
+    )
+    
+    # Отправляем отдельное сообщение с постоянным меню
+    await context.bot.send_message(
+        chat_id=update.effective_chat.id,
+        text="🎯 *Быстрое меню:* Используйте кнопки ниже для быстрого доступа к основным функциям",
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=main_keyboard
+    )
     
     # Создаем состояние пользователя, если его еще нет
     state = get_user_state(user_id)
@@ -129,7 +346,29 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     user_id = update.effective_user.id
     logger.info(f"User {user_id} requested help")
     
-    await send_markdown(update, context, HELP_MESSAGE, add_disclaimer=False)
+    # Создаем клавиатуру с быстрыми действиями
+    keyboard = [
+        [
+            InlineKeyboardButton("🌐 Веб-интерфейс", callback_data="action=get_streamlit"),
+            InlineKeyboardButton("🔄 Обновить данные", callback_data="action=update_snapshot")
+        ],
+        [
+            InlineKeyboardButton("🏷️ Показать тикеры", callback_data="action=show_tickers"),
+            InlineKeyboardButton("📊 Статус данных", callback_data="action=snapshot_info")
+        ]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await send_markdown(update, context, HELP_MESSAGE, add_disclaimer=False, reply_markup=reply_markup)
+    
+    # Показываем постоянное меню, если его еще нет
+    main_keyboard = get_main_keyboard()
+    await context.bot.send_message(
+        chat_id=update.effective_chat.id,
+        text="💡 *Подсказка:* Используйте постоянные кнопки ниже для быстрого доступа",
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=main_keyboard
+    )
 
 async def risk_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
@@ -494,59 +733,143 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     user_id = update.effective_user.id
     message_text = update.message.text
     
-    # Проверка на запрос обновления позиций без указания тикеров
-    simple_update_pattern = r"^(обнови|обновить|измени|изменить)\s+(позиции|список|портфель)$"
-    simple_match = re.search(simple_update_pattern, message_text.lower())
-    
-    if simple_match:
-        logger.info(f"User {user_id} requested portfolio update without specifying tickers")
+    # Обрабатываем нажатия на кнопки постоянного меню
+    if message_text == "🌐 Веб-интерфейс":
+        await streamlit_command(update, context)
+        return
+    elif message_text == "📖 Справка":
+        await help_command(update, context)
+        return
+    elif message_text == "🔄 Обновить данные":
+        await update_command(update, context)
+        return
+    elif message_text == "🏷️ Тикеры":
+        await tickers_command(update, context)
+        return
+    elif message_text == "📊 Статус данных":
+        await snapshot_command(update, context)
+        return
+    elif message_text == "⚙️ Настройки":
+        # Отправляем меню настроек
+        settings_text = """
+⚙️ *НАСТРОЙКИ ПРОФИЛЯ*
+
+Выберите параметр для изменения:
+
+🎲 *Риск-профиль:* `/risk conservative/moderate/aggressive`
+💰 *Бюджет:* `/budget 50000`
+📊 *Позиции:* `/positions {"AAPL": 100, "MSFT": 50}`
+🔄 *Сброс:* `/reset` - сбросить все настройки
+
+*Текущие настройки:*
+"""
+        state = get_user_state(user_id)
+        settings_text += f"• Риск-профиль: *{state.get('risk_profile', 'не установлен')}*\n"
+        settings_text += f"• Бюджет: *${state.get('budget', 0):,.2f}*\n"
+        positions = state.get('positions', {})
+        if positions:
+            settings_text += f"• Позиций в портфеле: *{len(positions)}*\n"
+        else:
+            settings_text += "• Позиций в портфеле: *нет*\n"
         
-        # Получаем последний запрос на изменение позиций из истории диалога
+        await send_markdown(update, context, settings_text, add_disclaimer=False)
+        return
+    
+    # Расширенная проверка на запрос обновления позиций
+    update_patterns = [
+        r"^(обнови|обновить|измени|изменить)\s+(позиции|список|портфель)$",
+        r"(обнови|обновить|измени|изменить)\s+(позиции|список|портфель).*(в\s+соответствии|согласно|по|на\s+основе).*(портфел|создан)",
+        r"(применить?|применить|использовать|установить).*(портфель|позиции|веса)"
+    ]
+    
+    update_match = None
+    for pattern in update_patterns:
+        update_match = re.search(pattern, message_text.lower())
+        if update_match:
+            break
+    
+    if update_match:
+        logger.info(f"User {user_id} requested portfolio update: '{message_text}'")
+        
+        # Получаем последний ответ ассистента из истории диалога
         state = get_user_state(user_id)
         dialog_memory = state.get("dialog_memory", [])
         
-        # Ищем последний ответ ассистента, где он предложил позиции
         portfolio_suggestion = None
         for msg in reversed(dialog_memory):
-            if msg.get("role") == "assistant" and re.search(r"ваш(его|ему)?.*(портфел|позици)", msg.get("content", "").lower()):
-                portfolio_suggestion = msg.get("content")
-                break
+            if msg.get("role") == "assistant":
+                content = msg.get("content", "")
+                # Проверяем, содержит ли ответ информацию о портфеле
+                if any(keyword in content.lower() for keyword in ["портфел", "позици", "тикер", "доля", "вес"]):
+                    portfolio_suggestion = content
+                    break
         
         if not portfolio_suggestion:
             await send_markdown(
                 update, 
                 context, 
-                "❌ Не найдено недавних предложений по обновлению портфеля. Пожалуйста, укажите тикеры явно.", 
+                "❌ Не найдено недавних предложений по портфелю. Пожалуйста, сначала попросите создать портфель.", 
                 add_disclaimer=False
             )
             return
         
-        # Извлекаем тикеры из предложения
-        tickers = []
-        portfolio_text = portfolio_suggestion.lower()
-        ticker_matches = re.finditer(r"[^a-z]([A-Z]{1,5})[^a-z]", portfolio_suggestion)
+        # Извлекаем тикеры и веса из таблицы или текста
+        # Получаем бюджет пользователя и цены из снапшота
+        user_budget = state.get("budget", 10000.0)
         
-        for match in ticker_matches:
-            tickers.append(match.group(1))
+        # Получаем цены из текущего снапшота
+        snapshot_prices = {}
+        try:
+            from ..market_snapshot.registry import SnapshotRegistry
+            registry = SnapshotRegistry()
+            
+            # Получаем ID снапшота пользователя
+            snapshot_id = state.get("last_snapshot_id")
+            if snapshot_id:
+                snapshot = registry.load(snapshot_id)
+                if snapshot and hasattr(snapshot, 'prices') and snapshot.prices:
+                    snapshot_prices = snapshot.prices
+                    logger.info(f"Loaded {len(snapshot_prices)} prices from snapshot {snapshot_id}")
+                else:
+                    logger.warning(f"No prices found in snapshot {snapshot_id}")
+            else:
+                logger.warning("No snapshot ID found for user")
+                
+        except Exception as e:
+            logger.error(f"Error loading snapshot prices: {e}")
         
-        if not tickers:
+        portfolio_data = _extract_portfolio_from_text(portfolio_suggestion, user_budget, snapshot_prices)
+        
+        if not portfolio_data:
             await send_markdown(
                 update, 
                 context, 
-                "❌ Не удалось извлечь тикеры из последнего предложения. Пожалуйста, укажите тикеры явно.", 
+                "❌ Не удалось извлечь информацию о портфеле из последнего ответа. Попробуйте указать тикеры явно.", 
                 add_disclaimer=False
             )
             return
         
-        # Создаем новые позиции
-        new_positions = {ticker: 100 for ticker in tickers}
-        
         # Обновляем позиции в состоянии пользователя
-        update_positions(user_id, new_positions)
+        update_positions(user_id, portfolio_data)
         
-        positions_text = "*Ваши обновленные позиции:*\n\n"
-        for ticker, amount in new_positions.items():
-            positions_text += f"• *{ticker}*: {amount}\n"
+        # Формируем сообщение об обновлении
+        positions_text = "*✅ Портфель успешно обновлен:*\n\n"
+        total_value = 0.0
+        
+        for ticker, shares_count in portfolio_data.items():
+            # Получаем цену акции
+            stock_price = snapshot_prices.get(ticker, 100.0) if snapshot_prices else 100.0
+            position_value = shares_count * stock_price
+            total_value += position_value
+            
+            # Вычисляем процент от общего бюджета
+            percentage = (position_value / user_budget) * 100 if user_budget > 0 else 0
+            
+            positions_text += f"• *{ticker}*: {shares_count:.4f} акций × ${stock_price:.2f} = ${position_value:.2f} ({percentage:.1f}%)\n"
+        
+        positions_text += f"\n*💰 Общая стоимость портфеля:* ${total_value:.2f}"
+        positions_text += f"\n*🎯 Бюджет пользователя:* ${user_budget:.2f}"
+        positions_text += f"\n*📊 Использовано бюджета:* {(total_value / user_budget) * 100 if user_budget > 0 else 0:.1f}%"
         
         await send_markdown(
             update, 
@@ -558,12 +881,12 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     
     # Проверка на запрос обновления позиций с указанными тикерами
     update_positions_pattern = r"(обнови|обновить|измени|изменить|установи|задай).+(позиции|список|портфель)[^а-яА-Я]*(используя|используя тикеры|из|состоящий из|с тикерами)[^а-яА-Я]*([A-Z]{1,5}(,\s*[A-Z]{1,5})*)"
-    match = re.search(update_positions_pattern, message_text.lower())
+    explicit_match = re.search(update_positions_pattern, message_text.lower())
     
-    if match:
+    if explicit_match:
         logger.info(f"User {user_id} requested portfolio update via text command")
         # Извлекаем список тикеров
-        tickers_text = match.group(4).strip()
+        tickers_text = explicit_match.group(4).strip()
         tickers = [ticker.strip() for ticker in re.split(r',\s*', tickers_text)]
         
         # Создаем новые позиции
@@ -594,7 +917,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await send_typing_action(update, context)
     
     # Запускаем агента-менеджера
-    response_text, image_paths = await run_portfolio_manager(message_text, state)
+    response_text, image_paths = await run_portfolio_manager(message_text, state, user_id)
     
     # Добавляем ответ бота в историю диалога
     update_dialog_memory(user_id, response_text, role="assistant")
@@ -617,7 +940,27 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     # Отправляем индикатор загрузки
     await query.answer(text="Обрабатываю...")
     
-    if callback_data == "action=reeval":
+    if callback_data == "action=get_streamlit":
+        # Отправляем информацию о веб-интерфейсе
+        await streamlit_command(update, context)
+        
+    elif callback_data == "action=get_help":
+        # Отправляем справку
+        await help_command(update, context)
+        
+    elif callback_data == "action=update_snapshot":
+        # Обновляем снапшот
+        await update_command(update, context)
+        
+    elif callback_data == "action=show_tickers":
+        # Показываем доступные тикеры
+        await tickers_command(update, context)
+    
+    elif callback_data == "action=snapshot_info":
+        # Показываем информацию о снапшоте
+        await snapshot_command(update, context)
+    
+    elif callback_data == "action=reeval":
         # Пересчитываем ответ с тем же текстом
         state = get_user_state(user_id)
         last_message = None
@@ -639,7 +982,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                 logger.error(f"Error sending typing action: {str(e)}")
             
             # Запускаем агента-менеджера
-            response_text, image_paths = await run_portfolio_manager(last_message, state)
+            response_text, image_paths = await run_portfolio_manager(last_message, state, user_id)
             
             # Обновляем последний ответ бота в истории диалога
             for i in range(len(state.get("dialog_memory", [])) - 1, -1, -1):
@@ -732,7 +1075,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         rebalance_text = "Сделай ребалансировку моего портфеля"
         
         # Запускаем агента-менеджера с запросом на ребалансировку
-        response_text, image_paths = await run_portfolio_manager(rebalance_text, state)
+        response_text, image_paths = await run_portfolio_manager(rebalance_text, state, user_id)
         
         # Отправляем результат ребалансировки
         keyboard = [
@@ -997,3 +1340,138 @@ async def performance_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     
     # TODO: Добавить генерацию графика производительности
     # и отправку его пользователю 
+
+async def force_update_all_users_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Обработчик команды /forceupdate для принудительного обновления всех пользователей на последний снапшот.
+    Эта команда полезна после сброса настроек или проблем с синхронизацией.
+    
+    Args:
+        update: Объект Update от Telegram
+        context: Контекст обработчика
+    """
+    user_id = update.effective_user.id
+    logger.info(f"User {user_id} requested forced update of all users to latest snapshot")
+    
+    # Отправляем сообщение о начале обновления
+    await send_markdown(
+        update, 
+        context, 
+        "⏳ Принудительно обновляю всех пользователей на последний снапшот...", 
+        add_disclaimer=False
+    )
+    
+    # Запускаем принудительное обновление всех пользователей
+    await send_typing_action(update, context)
+    
+    try:
+        # Получаем последний снапшот
+        registry = SnapshotRegistry()
+        latest_snapshot = registry.latest()
+        
+        if not latest_snapshot:
+            result = "❌ Нет доступных снапшотов для обновления"
+        else:
+            # Обновляем всех пользователей на последний снапшот
+            updated_count, snapshot_id = await update_all_users_snapshot_id()
+            
+            if updated_count > 0:
+                result = f"✅ Принудительно обновлено {updated_count} пользователей на снапшот: `{snapshot_id}`"
+                result += f"\n\nТеперь все пользователи используют последний снапшот."
+            else:
+                result = f"❌ Не удалось обновить пользователей: {snapshot_id}"
+    except Exception as e:
+        logger.error(f"Error in forced update: {str(e)}")
+        result = f"❌ Ошибка при принудительном обновлении: {str(e)}"
+    
+    # Отправляем результат
+    await send_markdown(
+        update, 
+        context, 
+        result, 
+        add_disclaimer=False
+    )
+
+async def streamlit_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Обработчик команды /streamlit.
+    
+    Args:
+        update: Объект Update от Telegram
+        context: Контекст обработчика
+    """
+    user_id = update.effective_user.id
+    logger.info(f"User {user_id} requested Streamlit interface link")
+    
+    message = f"""
+🌐 *ВЕБА-ИНТЕРФЕЙС PORTFOLIO ASSISTANT*
+
+═══════════════════════════
+
+🚀 **Прямая ссылка:** {STREAMLIT_URL}
+
+═══════════════════════════
+
+✨ *ВОЗМОЖНОСТИ ВЕБ-ИНТЕРФЕЙСА*
+
+📊 **Интерактивная аналитика:**
+• Динамические графики и диаграммы
+• Детальные таблицы с данными
+• Drag-and-drop интерфейс
+
+⚡ **Расширенная оптимизация:**
+• Алгоритмы HRP, Mean-Variance, Risk Parity
+• Настройка параметров риска
+• Сценарное моделирование
+
+📈 **Углубленный анализ:**
+• Историческая производительность
+• Корреляционные матрицы
+• Эффективная граница портфеля
+
+🔮 **Прогнозирование:**
+• 3-месячные прогнозы доходности
+• Анализ чувствительности
+• Стресс-тестирование портфеля
+
+📱 **Telegram интеграция:**
+• Отправка отчетов прямо в чат
+• Экспорт в различные форматы
+• Синхронизация данных
+
+═══════════════════════════
+
+🛠️ *БЫСТРЫЙ ЗАПУСК*
+
+**Автоматический запуск:**
+```
+./start.sh          # MacOS/Linux
+start.bat           # Windows
+python launcher.py  # Универсальный
+```
+
+**Ручной запуск:**
+```
+streamlit run streamlit_app.py --server.port=8501
+```
+
+═══════════════════════════
+
+💡 *СОВЕТ:* Если веб-интерфейс не запущен, используйте команды выше. Приложение автоматически откроется в браузере!
+
+🌟 Наслаждайтесь полнофункциональной аналитикой!
+"""
+
+    # Создаем клавиатуру с полезными ссылками
+    keyboard = [
+        [
+            InlineKeyboardButton("📖 Справка", callback_data="action=get_help"),
+            InlineKeyboardButton("🔄 Обновить данные", callback_data="action=update_snapshot")
+        ],
+        [
+            InlineKeyboardButton("🏷️ Доступные тикеры", callback_data="action=show_tickers")
+        ]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await send_markdown(update, context, message, add_disclaimer=False, reply_markup=reply_markup) 

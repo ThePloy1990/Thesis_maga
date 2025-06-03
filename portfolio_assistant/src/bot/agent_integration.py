@@ -19,6 +19,11 @@ from ..tools.forecast_tool import forecast_tool
 from ..tools.optimize_tool import optimize_tool
 from ..tools.sentiment_tool import sentiment_tool
 from ..tools.scenario_tool import scenario_adjust_tool
+from ..tools.performance_tool import performance_tool
+from ..tools.index_composition_tool import index_composition_tool, list_available_indices
+from ..tools.risk_analysis_tool import risk_analysis_tool
+from ..tools.efficient_frontier_tool import efficient_frontier_tool
+from ..tools.correlation_tool import correlation_tool
 from ..market_snapshot.registry import SnapshotRegistry
 from ..market_snapshot.model import MarketSnapshot, SnapshotMeta
 
@@ -36,6 +41,59 @@ MODELS_DIR = Path("../models")  # Путь к директории с модел
 # Кеш для списка доступных тикеров
 _available_tickers_cache = None
 _available_tickers_last_update = None
+
+def _update_all_users_snapshot_id_sync(snapshot_id: str) -> Tuple[int, str]:
+    """
+    Синхронная версия обновления ID снапшота для всех пользователей.
+    
+    Args:
+        snapshot_id: ID нового снапшота
+    
+    Returns:
+        Tuple[int, str]: Кортеж с количеством обновленных пользователей и ID установленного снапшота
+    """
+    try:
+        # Импортируем необходимые модули здесь чтобы избежать циклических импортов
+        import redis
+        from .state import USER_STATE_PREFIX, update_snapshot_id
+        from .config import REDIS_URL
+        
+        # Подключение к Redis
+        try:
+            redis_client = redis.from_url(REDIS_URL)
+        except Exception as e:
+            logger.error(f"Failed to connect to Redis: {str(e)}")
+            return (0, f"Redis connection error: {str(e)}")
+        
+        logger.info(f"Updating all users to snapshot: {snapshot_id}")
+        
+        # Получаем всех пользователей из Redis
+        user_keys = redis_client.keys(f"{USER_STATE_PREFIX}*")
+        updated_count = 0
+        
+        for user_key in user_keys:
+            try:
+                # Получаем ID пользователя из ключа (преобразуем bytes в str)
+                user_key_str = user_key.decode('utf-8') if isinstance(user_key, bytes) else user_key
+                user_id_str = user_key_str.replace(USER_STATE_PREFIX, "")
+                user_id = int(user_id_str)
+                
+                # Обновляем ID снапшота для пользователя
+                result = update_snapshot_id(user_id, snapshot_id)
+                if result:
+                    updated_count += 1
+                    logger.debug(f"Updated snapshot ID for user {user_id}")
+                else:
+                    logger.warning(f"Failed to update snapshot ID for user {user_id}")
+            except Exception as e:
+                logger.error(f"Error updating user {user_key}: {str(e)}")
+                continue
+        
+        logger.info(f"Successfully updated {updated_count} users to snapshot {snapshot_id}")
+        return (updated_count, snapshot_id)
+    except Exception as e:
+        logger.error(f"Error updating all users' snapshot ID: {str(e)}")
+        return (0, f"Error: {str(e)}")
 
 def get_available_tickers(use_cache: bool = True) -> List[str]:
     """
@@ -90,13 +148,14 @@ def get_available_tickers(use_cache: bool = True) -> List[str]:
     
     return tickers
 
-async def run_portfolio_manager(text: str, state: Dict[str, Any]) -> Tuple[str, List[str]]:
+async def run_portfolio_manager(text: str, state: Dict[str, Any], user_id: int = None) -> Tuple[str, List[str]]:
     """
     Асинхронно запускает портфельного агента-менеджера.
     
     Args:
         text: Запрос пользователя
         state: Состояние пользователя
+        user_id: ID пользователя
         
     Returns:
         Кортеж из markdown-текста и списка путей к изображениям
@@ -106,19 +165,20 @@ async def run_portfolio_manager(text: str, state: Dict[str, Any]) -> Tuple[str, 
     try:
         # Запускаем выполнение в отдельном потоке, чтобы не блокировать event loop
         return await asyncio.get_event_loop().run_in_executor(
-            _executor, _run_portfolio_manager_sync, text, state
+            _executor, _run_portfolio_manager_sync, text, state, user_id
         )
     except Exception as e:
         logger.error(f"Error running portfolio manager: {str(e)}")
         return f"Произошла ошибка при обработке запроса: {str(e)}", []
 
-def _run_portfolio_manager_sync(text: str, state: Dict[str, Any]) -> Tuple[str, List[str]]:
+def _run_portfolio_manager_sync(text: str, state: Dict[str, Any], user_id: int = None) -> Tuple[str, List[str]]:
     """
     Синхронная версия запуска портфельного агента с использованием OpenAI API.
     
     Args:
         text: Запрос пользователя
         state: Состояние пользователя
+        user_id: ID пользователя
         
     Returns:
         Кортеж из markdown-текста и списка путей к изображениям
@@ -185,19 +245,48 @@ def _run_portfolio_manager_sync(text: str, state: Dict[str, Any]) -> Tuple[str, 
         Доступная информация о рынке:
         - {snapshot_info}
         
-        Доступные тикеры:
+        Доступные тикеры ({len(available_tickers)}):
         {tickers_display}
         
-        ВАЖНО: Ты можешь работать ТОЛЬКО с указанными выше тикерами, для которых есть предобученные модели CatBoost.
-        Никогда не предлагай тикеры, которых нет в этом списке. Игнорируй любые запросы пользователя на анализ недоступных тикеров.
-        Просто отвечай, что тикер недоступен и лучше будет использовать другие инструменты для большей доходности.
+        ВАЖНО: 
+        - Ты можешь работать ТОЛЬКО с указанными выше тикерами (~{len(available_tickers)} шт.), для которых есть предобученные модели CatBoost.
+        - Все прогнозы модели рассчитаны на горизонт 3 МЕСЯЦА (квартальные прогнозы).
+        - Оптимизация портфеля по умолчанию использует алгоритм HRP (Hierarchical Risk Parity) для лучшей диверсификации.
+        - Также доступна оптимизация под целевую доходность (method="target_return" с параметром target_return).
+        - Никогда не предлагай тикеры, которых нет в списке доступных.
         
         Ты можешь использовать следующие инструменты:
-        1. get_forecast - получить прогноз доходности и риска для тикера
-        2. optimize_portfolio - оптимизировать портфель по тикерам
+        
+        БАЗОВЫЕ ИНСТРУМЕНТЫ:
+        1. get_forecast - получить 3-месячный прогноз доходности и риска для тикера
+        2. optimize_portfolio - оптимизировать портфель по тикерам (HRP, Markowitz, Black-Litterman, target_return)
         3. analyze_sentiment - анализировать настроения рынка по тикеру
         4. adjust_scenario - создать сценарий с изменением ожидаемой доходности
         5. plot_portfolio - создать график распределения портфеля
+        6. analyze_performance - анализировать РЕАЛЬНУЮ производительность портфеля на исторических данных
+        
+        НОВЫЕ РАСШИРЕННЫЕ ИНСТРУМЕНТЫ:
+        7. get_index_composition - получить состав популярных индексов (S&P 500 топ-10, Dow 30, tech giants, секторы)
+        8. analyze_risks - углубленный анализ рисков (VaR, Expected Shortfall, максимальная просадка, корреляции)
+        9. build_efficient_frontier - построить эффективную границу для оптимальных портфелей по риск/доходность
+        10. analyze_correlations - анализ корреляций между активами с визуализацией
+        11. update_portfolio - обновить и зафиксировать позиции пользователя в портфеле (использовать когда пользователь просит "обновить портфель", "зафиксировать портфель", "принять портфель")
+        
+        ПРИМЕРЫ ИСПОЛЬЗОВАНИЯ НОВЫХ ИНСТРУМЕНТОВ:
+        - "Создай консервативный портфель из топ-10 S&P 500" → get_index_composition("sp500_top10") + optimize_portfolio
+        - "Оптимизируй мой портфель под 15% годовых" → optimize_portfolio(method="target_return", target_return=0.15)
+        - "Проанализируй риски портфеля с Tesla и Apple" → analyze_risks(["TSLA", "AAPL"], weights)
+        - "Покажи эффективную границу для технологических акций" → build_efficient_frontier(sector="tech_giants")
+        - "Какова корреляция между BTC и золотом?" → analyze_correlations для криптовалют и золота
+        - "Обнови портфель" или "Зафиксируй портфель" → update_portfolio (автоматически найдет веса из предыдущего ответа)
+        
+        При создании портфеля:
+        - Указывай что прогнозы на 3 месяца (квартальные)
+        - Используй analyze_performance для расчета реальных метрик (годовая доходность, Alpha, Beta)
+        - Объясняй пользователю разницу между теоретическими прогнозами и реальной исторической производительностью
+        - Подчеркивай что Alpha показывает превышение доходности над рынком (S&P 500)
+        - Beta показывает чувствительность портфеля к рыночным движениям
+        - Используй новые инструменты для более глубокого анализа
         
         Отвечай на вопросы пользователя, используя доступные инструменты.
         Твой ответ должен быть в формате Markdown.
@@ -255,6 +344,14 @@ def _run_portfolio_manager_sync(text: str, state: Dict[str, Any]) -> Tuple[str, 
                             "risk_aversion": {
                                 "type": "number",
                                 "description": "Коэффициент неприятия риска (1.0 - нейтральный, >1.0 - консервативный, <1.0 - агрессивный)"
+                            },
+                            "method": {
+                                "type": "string",
+                                "description": "Метод оптимизации: hrp, markowitz, black_litterman, target_return"
+                            },
+                            "target_return": {
+                                "type": "number",
+                                "description": "Целевая доходность для метода target_return"
                             }
                         },
                         "required": ["tickers"]
@@ -328,6 +425,161 @@ def _run_portfolio_manager_sync(text: str, state: Dict[str, Any]) -> Tuple[str, 
                         "required": ["weights"]
                     }
                 }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "analyze_performance",
+                    "description": "Анализирует реальную производительность портфеля на исторических данных (за последние 3 месяца). Рассчитывает годовую доходность, альфу и бету относительно S&P 500.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "weights": {
+                                "type": "object",
+                                "additionalProperties": {
+                                    "type": "number"
+                                },
+                                "description": "Словарь весов портфеля в формате {тикер: вес}"
+                            },
+                            "start_date": {
+                                "type": "string",
+                                "description": "Начальная дата анализа в формате YYYY-MM-DD (опционально, по умолчанию 3 месяца назад)"
+                            },
+                            "end_date": {
+                                "type": "string", 
+                                "description": "Конечная дата анализа в формате YYYY-MM-DD (опционально, по умолчанию сегодня)"
+                            }
+                        },
+                        "required": ["weights"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_index_composition",
+                    "description": "Возвращает состав популярных фондовых индексов для создания портфелей",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "index_name": {
+                                "type": "string",
+                                "description": "Название индекса: sp500_top10, sp500_top20, dow30, nasdaq_top10, tech_giants, financial_sector, energy_sector, healthcare_sector, consumer_staples"
+                            }
+                        },
+                        "required": ["index_name"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "analyze_risks",
+                    "description": "Проводит углубленный анализ рисков портфеля или отдельных активов. Рассчитывает VaR, ожидаемые потери, корреляции.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "tickers": {
+                                "type": "array",
+                                "items": {
+                                    "type": "string"
+                                },
+                                "description": f"Список тикеров для анализа рисков, выбирайте только из доступных: {', '.join(available_tickers)}"
+                            },
+                            "weights": {
+                                "type": "object",
+                                "additionalProperties": {
+                                    "type": "number"
+                                },
+                                "description": "Словарь весов портфеля в формате {тикер: вес} (опционально для портфельного анализа)"
+                            },
+                            "confidence_level": {
+                                "type": "number",
+                                "description": "Уровень доверия для VaR (0.90, 0.95, 0.99). По умолчанию 0.95"
+                            }
+                        },
+                        "required": ["tickers"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "build_efficient_frontier",
+                    "description": "Строит эффективную границу для заданных активов или сектора. Показывает оптимальные портфели по соотношению риск/доходность.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "tickers": {
+                                "type": "array",
+                                "items": {
+                                    "type": "string"
+                                },
+                                "description": f"Список тикеров для построения границы, выбирайте только из доступных: {', '.join(available_tickers)}"
+                            },
+                            "sector": {
+                                "type": "string",
+                                "description": "Название сектора вместо списка тикеров: tech_giants, financial_sector, energy_sector, healthcare_sector, consumer_staples"
+                            },
+                            "num_portfolios": {
+                                "type": "integer",
+                                "description": "Количество точек на границе (по умолчанию 100)"
+                            }
+                        }
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "analyze_correlations",
+                    "description": "Анализирует корреляции между активами. Полезно для диверсификации портфеля.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "tickers": {
+                                "type": "array",
+                                "items": {
+                                    "type": "string"
+                                },
+                                "description": f"Список тикеров для анализа корреляций, выбирайте только из доступных: {', '.join(available_tickers)}"
+                            },
+                            "method": {
+                                "type": "string",
+                                "description": "Метод корреляции: pearson, spearman, kendall (по умолчанию pearson)"
+                            },
+                            "rolling_window": {
+                                "type": "integer",
+                                "description": "Размер окна для скользящей корреляции в днях (опционально)"
+                            }
+                        },
+                        "required": ["tickers"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "update_portfolio",
+                    "description": "Обновляет и фиксирует позиции пользователя в портфеле. Используется когда пользователь просит 'обновить портфель', 'зафиксировать портфель', 'принять портфель' или 'установить позиции'. Если веса не переданы, автоматически извлекает их из предыдущего ответа с портфелем.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "weights": {
+                                "type": "object",
+                                "additionalProperties": {
+                                    "type": "number"
+                                },
+                                "description": "Словарь весов портфеля в формате {тикер: вес_в_процентах} например {'AAPL': 25.5, 'MSFT': 30.0}. Опционально - будет извлечен из предыдущего ответа если не указан."
+                            },
+                            "budget": {
+                                "type": "number",
+                                "description": "Бюджет пользователя для расчета количества акций (опционально, используется текущий бюджет пользователя)"
+                            }
+                        },
+                        "required": []
+                    }
+                }
             }
         ]
         
@@ -350,9 +602,9 @@ def _run_portfolio_manager_sync(text: str, state: Dict[str, Any]) -> Tuple[str, 
                 return {"error": f"Тикер {ticker} недоступен для прогнозирования"}
             return forecast_tool(ticker, snapshot_id)
         
-        def optimize_portfolio(tickers: List[str], risk_aversion: float = 1.0) -> Dict[str, Any]:
+        def optimize_portfolio(tickers: List[str], risk_aversion: float = 1.0, method: str = "hrp", target_return: float = None) -> Dict[str, Any]:
             """Оптимизирует портфель на основе указанных тикеров."""
-            logger.info(f"Using optimize_tool for {tickers}")
+            logger.info(f"Using optimize_tool for {tickers} with method {method}")
             
             # Проверяем, что все тикеры из доступного списка
             valid_tickers = [t for t in tickers if t in available_tickers]
@@ -382,7 +634,13 @@ def _run_portfolio_manager_sync(text: str, state: Dict[str, Any]) -> Tuple[str, 
                 logger.info(f"Оптимизация портфеля для {len(valid_tickers)} тикеров с использованием снапшота {correct_snapshot_id}")
                 
                 # Вызываем оптимизацию с правильными параметрами
-                return optimize_tool(tickers=valid_tickers, snapshot_id=correct_snapshot_id, risk_aversion=risk_aversion)
+                return optimize_tool(
+                    tickers=valid_tickers, 
+                    snapshot_id=correct_snapshot_id, 
+                    risk_aversion=risk_aversion,
+                    method=method,
+                    target_return=target_return
+                )
             except Exception as e:
                 logger.error(f"Optimization error: {str(e)}")
                 # В случае ошибки возвращаем равномерное распределение
@@ -460,6 +718,326 @@ def _run_portfolio_manager_sync(text: str, state: Dict[str, Any]) -> Tuple[str, 
                 
                 return tmp_file.name
         
+        def analyze_performance(weights: Dict[str, float], start_date: str = None, end_date: str = None) -> Dict[str, Any]:
+            """Анализирует реальную производительность портфеля на исторических данных."""
+            logger.info(f"Analyzing performance for portfolio with weights {weights}")
+            
+            # Проверяем, есть ли веса для анализа
+            if not weights:
+                return {"error": "Веса портфеля не предоставлены"}
+            
+            # Проверяем, что все тикеры из доступного списка
+            valid_weights = {t: w for t, w in weights.items() if t in available_tickers}
+            if len(valid_weights) < len(weights):
+                invalid_tickers = [t for t in weights.keys() if t not in available_tickers]
+                logger.warning(f"Следующие тикеры недоступны и будут исключены из анализа: {invalid_tickers}")
+            
+            if not valid_weights:
+                return {"error": "Нет доступных тикеров для анализа производительности"}
+            
+            # Перенормализуем веса
+            total_weight = sum(valid_weights.values())
+            if total_weight > 0:
+                valid_weights = {t: w/total_weight for t, w in valid_weights.items()}
+            
+            try:
+                # Вызываем инструмент анализа производительности
+                result = performance_tool(
+                    weights=valid_weights,
+                    start_date=start_date,
+                    end_date=end_date
+                )
+                
+                # Добавляем информацию о горизонте прогноза
+                if "error" not in result:
+                    result["forecast_horizon"] = "3 months"
+                    result["note"] = "Анализ основан на 3-месячных прогнозах доходности"
+                
+                return result
+                
+            except Exception as e:
+                logger.error(f"Error in performance analysis: {str(e)}")
+                return {"error": f"Ошибка анализа производительности: {str(e)}"}
+        
+        def get_index_composition(index_name: str) -> Dict[str, Any]:
+            """Получает состав популярного фондового индекса."""
+            logger.info(f"Getting index composition for {index_name}")
+            try:
+                return index_composition_tool(index_name=index_name, filter_available=True)
+            except Exception as e:
+                logger.error(f"Error getting index composition: {str(e)}")
+                return {"error": f"Ошибка получения состава индекса: {str(e)}"}
+        
+        def analyze_risks(tickers: List[str], weights: Dict[str, float] = None, confidence_level: float = 0.95) -> Dict[str, Any]:
+            """Проводит углубленный анализ рисков портфеля или отдельных активов."""
+            logger.info(f"Analyzing risks for {tickers}")
+            
+            # Проверяем доступность тикеров
+            valid_tickers = [t for t in tickers if t in available_tickers]
+            if len(valid_tickers) < len(tickers):
+                invalid_tickers = [t for t in tickers if t not in available_tickers]
+                logger.warning(f"Следующие тикеры недоступны: {invalid_tickers}")
+            
+            if not valid_tickers:
+                return {"error": "Нет доступных тикеров для анализа рисков"}
+            
+            try:
+                return risk_analysis_tool(
+                    tickers=valid_tickers,
+                    weights=weights,
+                    confidence_level=confidence_level,
+                    snapshot_id=snapshot_id
+                )
+            except Exception as e:
+                logger.error(f"Error in risk analysis: {str(e)}")
+                return {"error": f"Ошибка анализа рисков: {str(e)}"}
+        
+        def build_efficient_frontier(tickers: List[str] = None, sector: str = None, num_portfolios: int = 100) -> Dict[str, Any]:
+            """Строит эффективную границу для заданных активов или сектора."""
+            if sector:
+                logger.info(f"Building efficient frontier for sector: {sector}")
+            else:
+                logger.info(f"Building efficient frontier for tickers: {tickers}")
+            
+            try:
+                result = efficient_frontier_tool(
+                    tickers=tickers,
+                    sector=sector,
+                    num_portfolios=num_portfolios,
+                    snapshot_id=snapshot_id
+                )
+                
+                # Добавляем график в список изображений если он создан
+                if "plot_path" in result and result["plot_path"]:
+                    image_paths.append(result["plot_path"])
+                
+                return result
+            except Exception as e:
+                logger.error(f"Error building efficient frontier: {str(e)}")
+                return {"error": f"Ошибка построения эффективной границы: {str(e)}"}
+        
+        def analyze_correlations(tickers: List[str], method: str = "pearson", rolling_window: int = None) -> Dict[str, Any]:
+            """Анализирует корреляции между активами."""
+            logger.info(f"Analyzing correlations for {tickers}")
+            
+            # Проверяем доступность тикеров
+            valid_tickers = [t for t in tickers if t in available_tickers]
+            if len(valid_tickers) < len(tickers):
+                invalid_tickers = [t for t in tickers if t not in available_tickers]
+                logger.warning(f"Следующие тикеры недоступны: {invalid_tickers}")
+            
+            if len(valid_tickers) < 2:
+                return {"error": "Для анализа корреляций требуется минимум 2 доступных тикера"}
+            
+            try:
+                result = correlation_tool(
+                    tickers=valid_tickers,
+                    method=method,
+                    rolling_window=rolling_window,
+                    snapshot_id=snapshot_id
+                )
+                
+                # Добавляем графики в список изображений если они созданы
+                if "heatmap_path" in result and result["heatmap_path"]:
+                    image_paths.append(result["heatmap_path"])
+                if "rolling_plot_path" in result and result["rolling_plot_path"]:
+                    image_paths.append(result["rolling_plot_path"])
+                
+                return result
+            except Exception as e:
+                logger.error(f"Error analyzing correlations: {str(e)}")
+                return {"error": f"Ошибка анализа корреляций: {str(e)}"}
+        
+        def update_portfolio(weights: Dict[str, float] = None, user_budget: float = None) -> Dict[str, Any]:
+            """Обновляет позиции пользователя в портфеле на основе весов."""
+            logger.info(f"Updating portfolio with weights: {weights}")
+            
+            try:
+                # Если веса не переданы, пытаемся извлечь их из истории диалога
+                if not weights:
+                    logger.info("Weights not provided, trying to extract from dialog history")
+                    
+                    # Получаем историю диалога
+                    dialog_memory = state.get('dialog_memory', [])
+                    
+                    # Ищем последний ответ ассистента с информацией о портфеле
+                    for msg in reversed(dialog_memory):
+                        if msg.get("role") == "assistant":
+                            content = msg.get("content", "")
+                            # Пытаемся извлечь веса из текста
+                            extracted_weights = _extract_weights_from_text(content)
+                            if extracted_weights:
+                                weights = extracted_weights
+                                logger.info(f"Extracted weights from dialog: {weights}")
+                                break
+                    
+                    # Если не нашли веса в истории, возвращаем ошибку
+                    if not weights:
+                        return {
+                            "status": "error",
+                            "error": "Не найдены веса портфеля для обновления. Сначала создайте оптимизированный портфель."
+                        }
+                
+                # Используем переданный бюджет или берем из состояния пользователя
+                if user_budget is None:
+                    user_budget = budget
+                
+                # Получаем цены из снапшота
+                registry = SnapshotRegistry()
+                snapshot = None
+                if snapshot_id:
+                    snapshot = registry.load(snapshot_id)
+                else:
+                    snapshot = registry.latest()
+                
+                prices = {}
+                if snapshot and hasattr(snapshot, 'prices') and snapshot.prices:
+                    prices = snapshot.prices
+                    logger.info(f"Loaded {len(prices)} prices from snapshot")
+                else:
+                    logger.warning("No prices available, using default prices")
+                
+                # Конвертируем веса в позиции (количество акций)
+                new_positions = {}
+                total_allocated = 0.0
+                
+                for ticker, weight_percent in weights.items():
+                    if ticker not in available_tickers:
+                        logger.warning(f"Ticker {ticker} not in available tickers, skipping")
+                        continue
+                    
+                    # Получаем цену акции (по умолчанию $100)
+                    stock_price = prices.get(ticker, 100.0)
+                    
+                    # Рассчитываем сумму для инвестирования в этот актив
+                    allocation_amount = user_budget * (weight_percent / 100.0)
+                    total_allocated += allocation_amount
+                    
+                    # Рассчитываем количество акций
+                    shares_count = allocation_amount / stock_price
+                    new_positions[ticker] = shares_count
+                    
+                    logger.debug(f"{ticker}: {weight_percent}% = ${allocation_amount:.2f} / ${stock_price:.2f} = {shares_count:.4f} shares")
+                
+                # Проверяем что мы не превысили бюджет
+                if total_allocated > user_budget * 1.01:  # Небольшой допуск на округления
+                    logger.warning(f"Total allocation ${total_allocated:.2f} exceeds budget ${user_budget:.2f}")
+                
+                # Импортируем функцию обновления позиций
+                from .state import update_positions
+                
+                # Получаем user_id из параметра функции
+                if user_id is None:
+                    logger.error("user_id не передан в функцию update_portfolio")
+                    return {
+                        "status": "error",
+                        "error": "Отсутствует идентификатор пользователя"
+                    }
+                
+                # Обновляем позиции пользователя
+                success = update_positions(user_id, new_positions)
+                
+                if success:
+                    # Формируем детальный отчет по каждому тикеру
+                    detailed_breakdown = []
+                    for ticker, shares_count in new_positions.items():
+                        stock_price = prices.get(ticker, 100.0)
+                        position_value = shares_count * stock_price
+                        weight_percent = weights.get(ticker, 0)
+                        
+                        detailed_breakdown.append({
+                            "ticker": ticker,
+                            "weight_percent": weight_percent,
+                            "shares": shares_count,
+                            "price_per_share": stock_price,
+                            "total_value": position_value
+                        })
+                    
+                    return {
+                        "status": "success",
+                        "message": f"Портфель успешно обновлен. Позиции установлены для {len(new_positions)} тикеров.",
+                        "positions": new_positions,
+                        "total_allocated": total_allocated,
+                        "budget_used_percent": (total_allocated / user_budget) * 100 if user_budget > 0 else 0,
+                        "detailed_breakdown": detailed_breakdown,
+                        "budget": user_budget
+                    }
+                else:
+                    return {
+                        "status": "error", 
+                        "error": "Не удалось сохранить обновленные позиции в базе данных"
+                    }
+                
+            except Exception as e:
+                logger.error(f"Error updating portfolio: {str(e)}")
+                return {
+                    "status": "error",
+                    "error": f"Ошибка при обновлении портфеля: {str(e)}"
+                }
+        
+        def _extract_weights_from_text(text: str) -> Dict[str, float]:
+            """Извлекает веса портфеля из текста ответа модели."""
+            weights = {}
+            
+            try:
+                import re
+                
+                # Метод 1: Поиск таблицы в Markdown формате (2 колонки: Тикер и Вес)
+                # Ищем строки вида: | AOS | 2.47 |
+                table_pattern_2col = r'\|\s*([A-Z]{1,5})\s*\|\s*(\d+\.?\d*)\s*\|'
+                table_matches_2col = re.findall(table_pattern_2col, text)
+                
+                if table_matches_2col:
+                    logger.info(f"Found {len(table_matches_2col)} weights in 2-column table format")
+                    for ticker, percentage_str in table_matches_2col:
+                        # Пропускаем заголовки таблицы
+                        if ticker.upper() in ['ТИКЕР', 'TICKER', 'ВЕС', 'WEIGHT']:
+                            continue
+                        percentage = float(percentage_str)
+                        weights[ticker] = percentage
+                
+                # Метод 2: Поиск таблицы в Markdown формате (3 колонки: Тикер, Компания, Вес)
+                # Ищем строки вида: | TICKER | Company Name | 6.55% |
+                if not weights:
+                    table_pattern_3col = r'\|\s*([A-Z]{1,5})\s*\|[^|]*\|\s*(\d+\.?\d*)%?\s*\|'
+                    table_matches_3col = re.findall(table_pattern_3col, text)
+                    
+                    if table_matches_3col:
+                        logger.info(f"Found {len(table_matches_3col)} weights in 3-column table format")
+                        for ticker, percentage_str in table_matches_3col:
+                            percentage = float(percentage_str)
+                            weights[ticker] = percentage
+                
+                # Метод 3: Поиск в тексте формата "TICKER: percentage%"
+                if not weights:
+                    text_pattern = r'([A-Z]{1,5})[\s\-:]+(\d+\.?\d*)%'
+                    text_matches = re.findall(text_pattern, text)
+                    
+                    if text_matches:
+                        logger.info(f"Found {len(text_matches)} weights in text format")
+                        for ticker, percentage_str in text_matches:
+                            percentage = float(percentage_str)
+                            weights[ticker] = percentage
+                
+                # Метод 4: Поиск JSON-подобных структур с весами
+                if not weights:
+                    # Ищем паттерны вида "TICKER": 12.34
+                    json_pattern = r'"([A-Z]{1,5})"[\s]*:[\s]*(\d+\.?\d*)'
+                    json_matches = re.findall(json_pattern, text)
+                    
+                    if json_matches:
+                        logger.info(f"Found {len(json_matches)} weights in JSON format")
+                        for ticker, percentage_str in json_matches:
+                            percentage = float(percentage_str)
+                            weights[ticker] = percentage
+                
+                logger.info(f"Extracted weights: {weights}")
+                return weights
+                
+            except Exception as e:
+                logger.error(f"Error extracting weights from text: {e}")
+                return {}
+        
         for turn in range(max_turns):
             # Вызываем модель OpenAI
             response = client.chat.completions.create(
@@ -488,7 +1066,9 @@ def _run_portfolio_manager_sync(text: str, state: Dict[str, Any]) -> Tuple[str, 
                         tool_result = get_forecast(tool_args["ticker"])
                     elif tool_name == "optimize_portfolio":
                         risk_aversion = tool_args.get("risk_aversion", 1.0)
-                        tool_result = optimize_portfolio(tool_args["tickers"], risk_aversion)
+                        method = tool_args.get("method", "hrp")
+                        target_return = tool_args.get("target_return")
+                        tool_result = optimize_portfolio(tool_args["tickers"], risk_aversion, method, target_return)
                     elif tool_name == "analyze_sentiment":
                         window_days = tool_args.get("window_days", 7)
                         tool_result = analyze_sentiment(tool_args["ticker"], window_days)
@@ -545,6 +1125,38 @@ def _run_portfolio_manager_sync(text: str, state: Dict[str, Any]) -> Tuple[str, 
                         img_path = plot_portfolio(weights)
                         image_paths.append(img_path)
                         tool_result = {"image_path": img_path, "status": "success"}
+                    elif tool_name == "analyze_performance":
+                        # Проверка на наличие ключа 'weights' в аргументах
+                        if "weights" not in tool_args:
+                            logger.warning("Tool 'analyze_performance' called without 'weights' parameter")
+                            tool_result = {"error": "Отсутствует параметр 'weights'"}
+                        else:
+                            weights = tool_args["weights"]
+                            start_date = tool_args.get("start_date")
+                            end_date = tool_args.get("end_date")
+                            tool_result = analyze_performance(weights, start_date, end_date)
+                    elif tool_name == "get_index_composition":
+                        index_name = tool_args["index_name"]
+                        tool_result = get_index_composition(index_name)
+                    elif tool_name == "analyze_risks":
+                        tickers = tool_args["tickers"]
+                        weights = tool_args.get("weights")
+                        confidence_level = tool_args.get("confidence_level", 0.95)
+                        tool_result = analyze_risks(tickers, weights, confidence_level)
+                    elif tool_name == "build_efficient_frontier":
+                        tickers = tool_args.get("tickers")
+                        sector = tool_args.get("sector")
+                        num_portfolios = tool_args.get("num_portfolios", 100)
+                        tool_result = build_efficient_frontier(tickers, sector, num_portfolios)
+                    elif tool_name == "analyze_correlations":
+                        tickers = tool_args["tickers"]
+                        method = tool_args.get("method", "pearson")
+                        rolling_window = tool_args.get("rolling_window")
+                        tool_result = analyze_correlations(tickers, method, rolling_window)
+                    elif tool_name == "update_portfolio":
+                        weights = tool_args.get("weights")  # Используем .get() вместо прямого доступа
+                        budget = tool_args.get("budget", budget)
+                        tool_result = update_portfolio(weights, budget)
                     
                     # Добавляем результат инструмента в историю
                     messages.append({
@@ -613,9 +1225,9 @@ def _build_snapshot_sync() -> str:
             snapshot_id=snapshot_id,
             timestamp=datetime.now(timezone.utc),
             tickers=tickers,
-            description="Live market snapshot",
+            description="Live market snapshot with quarterly forecasts",
             source="yfinance",
-            properties={"horizon_days": 30}
+            properties={"horizon_days": 90}  # 3 месяца = 90 дней
         )
         
         # Получаем исторические данные для всех тикеров
@@ -689,18 +1301,20 @@ def _build_snapshot_sync() -> str:
                 # Сохраняем для последующего расчета ковариации
                 all_returns[ticker] = log_returns
                 
-                # Преобразуем в месячные доходности (примерно 21 торговый день)
-                monthly_returns = log_returns.resample('21D').sum()
+                # Рассчитываем историческую квартальную доходность и применяем коэффициент 8.0
+                quarterly_returns = log_returns.resample('63D').sum()
+                mean_value = quarterly_returns.mean()
                 
-                # Рассчитываем ожидаемую месячную доходность (среднее значение)
-                mean_value = monthly_returns.mean()
                 # Безопасно получаем значение: для Series или DataFrame
                 if hasattr(mean_value, 'iloc'):
-                    mu_value = float(mean_value.iloc[0])
+                    historical_mu = float(mean_value.iloc[0])
                 elif isinstance(mean_value, pd.Series):
-                    mu_value = float(mean_value.values[0])  
+                    historical_mu = float(mean_value.values[0])  
                 else:
-                    mu_value = float(mean_value)
+                    historical_mu = float(mean_value)
+                
+                mu_value = historical_mu * 8.0
+                logger.info(f"Enhanced forecast for {ticker}: historical={historical_mu:.4f}, enhanced={mu_value:.4f}")
                     
                 mu[ticker] = mu_value
                 
@@ -757,8 +1371,8 @@ def _build_snapshot_sync() -> str:
             for i in valid_tickers:
                 for j in valid_tickers:
                     if i in returns_df.columns and j in returns_df.columns:
-                        # Рассчитываем месячную ковариацию (умножаем дневную на 21)
-                        cov_value = returns_df[i].cov(returns_df[j]) * 21
+                        # Рассчитываем квартальную ковариацию (умножаем дневную на 63)
+                        cov_value = returns_df[i].cov(returns_df[j]) * 63
                         sigma[i][j] = float(cov_value)
         
         # Создаем снапшот
@@ -774,6 +1388,16 @@ def _build_snapshot_sync() -> str:
         # Сохраняем снапшот
         registry = SnapshotRegistry()
         snapshot_id = registry.save(snapshot)
+        
+        # АВТОМАТИЧЕСКИ ОБНОВЛЯЕМ ВСЕХ ПОЛЬЗОВАТЕЛЕЙ НА НОВЫЙ СНАПШОТ
+        try:
+            from .handlers import update_all_users_snapshot_id
+            # Вызываем синхронную версию обновления пользователей
+            updated_count, _ = _update_all_users_snapshot_id_sync(snapshot_id)
+            logger.info(f"Automatically updated {updated_count} users to new snapshot {snapshot_id}")
+        except Exception as update_error:
+            logger.warning(f"Failed to auto-update users for new snapshot {snapshot_id}: {update_error}")
+            # Продолжаем выполнение, так как снапшот уже создан
         
         logger.info(f"Created new snapshot {snapshot_id} with {len(valid_tickers)} tickers")
         return f"Создан новый снапшот: {snapshot_id} ({len(valid_tickers)} тикеров)"

@@ -19,6 +19,7 @@ loguru>=0.7.2,<0.8.0
 newsapi-python>=0.2.6
 catboost>=1.2
 pandas-ta
+statsmodels>=0.13.0
 # Зависимости для разработки
 pytest
 pytest-cov

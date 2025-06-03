@@ -44,20 +44,22 @@ def test_snapshot_registry() -> SnapshotRegistry:
 def dummy_snapshot_id(test_snapshot_registry: SnapshotRegistry) -> str:
     """Creates a dummy snapshot with 3 assets and returns its ID."""
     registry = test_snapshot_registry
-    assets = ["ASSET_X", "ASSET_Y", "ASSET_Z"]
+    
+    # Используем реальные тикеры, для которых есть модели в папке models
+    assets = ["T", "JNJ", "PG"]
 
     # More realistic means and covariance for testing
     mu_data = {
-        "ASSET_X": 0.12,
-        "ASSET_Y": 0.18,
-        "ASSET_Z": 0.09
+        "T": 0.12,
+        "JNJ": 0.18,
+        "PG": 0.09
     }
 
     # Ensure positive definite covariance matrix
     sigma_data_array = np.array([
-        [0.050, 0.015, 0.008],  # Var(X), Cov(X,Y), Cov(X,Z)
-        [0.015, 0.065, 0.012],  # Cov(Y,X), Var(Y), Cov(Y,Z)
-        [0.008, 0.012, 0.040]   # Cov(Z,X), Cov(Z,Y), Var(Z)
+        [0.050, 0.015, 0.008],  # Var(T), Cov(T,JNJ), Cov(T,PG)
+        [0.015, 0.065, 0.012],  # Cov(JNJ,T), Var(JNJ), Cov(JNJ,PG)
+        [0.008, 0.012, 0.040]   # Cov(PG,T), Cov(PG,JNJ), Var(PG)
     ])
     # Check positive definiteness (all eigenvalues positive)
     eigenvalues = np.linalg.eigvals(sigma_data_array)
@@ -131,6 +133,31 @@ def test_optimize_tool_black_litterman(dummy_snapshot_id: str):
     assert result["sharpe"] is not None
 
 
+def test_optimize_tool_hrp(dummy_snapshot_id: str):
+    """Test HRP (Hierarchical Risk Parity) optimization."""
+    snapshot_id = dummy_snapshot_id
+    min_w = 0.05  # Minimum weight threshold for HRP
+
+    result = optimize_tool(
+        snapshot_id=snapshot_id,
+        method="hrp",
+        min_weight=min_w
+    )
+    logger.info(f"HRP test result: {result}")
+
+    assert "error" not in result or result["error"] is None, f"HRP optimization failed: {result.get('error')}"
+    assert result["weights"] is not None
+    assert result["snapshot_id"] == snapshot_id
+    weights_sum = sum(result["weights"].values())
+    assert weights_sum == pytest.approx(1.0, abs=1.1e-5), f"Sum of weights {weights_sum} is not approximately 1."
+    # HRP doesn't use max_weight constraint, so we just check all weights are positive
+    assert all(w > 0 for w in result["weights"].values()), "All HRP weights should be positive"
+    assert result["exp_ret"] is not None
+    assert result["risk"] is not None
+    assert result["sharpe"] is not None
+    assert result["method"] == "HRP"
+
+
 def test_optimize_tool_invalid_method(dummy_snapshot_id: str):
     """Test with an invalid optimization method."""
     snapshot_id = dummy_snapshot_id
@@ -154,12 +181,12 @@ def test_optimize_tool_snapshot_not_found():
 def test_optimize_tool_invalid_max_weight(dummy_snapshot_id: str):
     """Test with an invalid max_weight parameter."""
     snapshot_id = dummy_snapshot_id
-    result = optimize_tool(snapshot_id=snapshot_id, max_weight=1.5) # max_weight > 1
+    result = optimize_tool(snapshot_id=snapshot_id, method="markowitz", max_weight=1.5) # max_weight > 1
     logger.info(f"Invalid max_weight (too high) test result: {result}")
     assert result["error"] is not None
     assert "Invalid max_weight" in result["error"]
 
-    result_low = optimize_tool(snapshot_id=snapshot_id, max_weight=-0.1) # max_weight < 0
+    result_low = optimize_tool(snapshot_id=snapshot_id, method="markowitz", max_weight=-0.1) # max_weight < 0
     logger.info(f"Invalid max_weight (too low) test result: {result_low}")
     assert result_low["error"] is not None
     assert "Invalid max_weight" in result_low["error"]

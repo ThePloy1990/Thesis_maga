@@ -5,8 +5,17 @@ from pathlib import Path
 import pandas as pd
 import numpy as np
 from pypfopt import EfficientFrontier, BlackLittermanModel, expected_returns, risk_models
+from pypfopt.hierarchical_portfolio import HRPOpt
 
-from ..market_snapshot.registry import SnapshotRegistry
+# Исправляем импорт для работы со Streamlit
+try:
+    from ..market_snapshot.registry import SnapshotRegistry
+except ImportError:
+    # Альтернативный импорт для Streamlit
+    import sys
+    import os
+    sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'market_snapshot'))
+    from registry import SnapshotRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -14,10 +23,12 @@ logger = logging.getLogger(__name__)
 def optimize_tool(
     tickers: Optional[List[str]] = None,  # Список тикеров для оптимизации
     snapshot_id: str = None,  # ID снэпшота (опционально)
-    risk_aversion: float = 1.0,  # Снижено с 2.5 до 1.0 для более агрессивной оптимизации по умолчанию
-    method: str = "black_litterman",  # or "markowitz"
-    max_weight: float = 0.4,
-    risk_free_rate: float = 0.005  # Низкое значение соответствует текущим рыночным ставкам
+    risk_aversion: float = 1.0,  # Для совместимости, но не используется в HRP
+    method: str = "hrp",  # "hrp", "black_litterman", "markowitz", или "target_return"
+    max_weight: float = 0.4,  # Для non-HRP методов
+    risk_free_rate: float = 0.001,  # Для расчета Sharpe
+    min_weight: float = 0.01,  # Минимальный вес для HRP (фильтрация)
+    target_return: float = None  # Целевая годовая доходность (например, 0.15 для 15%)
 ) -> Dict:
     """
     Optimizes a portfolio based on a given market snapshot.
@@ -25,10 +36,12 @@ def optimize_tool(
     Args:
         tickers: List of tickers to optimize with. If provided, only these tickers will be used.
         snapshot_id: The ID of the market snapshot to use. If None, the latest snapshot is used.
-        risk_aversion: Risk aversion coefficient. Used for market-implied prior in Black-Litterman.
-        method: Optimization method, either "black_litterman" or "markowitz".
-        max_weight: Maximum weight for any single asset in the portfolio (0 to 1).
+        risk_aversion: Risk aversion coefficient. Used for market-implied prior in Black-Litterman (не используется в HRP).
+        method: Optimization method: "hrp" (default), "black_litterman", "markowitz", or "target_return".
+        max_weight: Maximum weight for any single asset in the portfolio (0 to 1) - только для non-HRP методов.
         risk_free_rate: The risk-free rate for Sharpe ratio calculation.
+        min_weight: Minimum weight threshold for HRP - активы с меньшим весом исключаются.
+        target_return: Target annual return for "target_return" method (e.g., 0.15 for 15%).
 
     Returns:
         A dictionary containing the optimized weights, expected portfolio return,
@@ -110,6 +123,177 @@ def optimize_tool(
             "snapshot_id": snapshot_id
         }
 
+    # Для HRP используем реальные исторические данные
+    if method.lower() == "hrp":
+        try:
+            import yfinance as yf
+            from datetime import datetime, timedelta, timezone
+            
+            logger.info(f"Using HRP optimization with {len(assets)} assets")
+            
+            # Загружаем реальные исторические данные для HRP (как в agent_integration.py)
+            end_date = datetime.now(timezone.utc)
+            start_date = end_date - timedelta(days=365)  # Год исторических данных
+            
+            logger.info(f"Загружаем исторические данные с {start_date.strftime('%Y-%m-%d')} по {end_date.strftime('%Y-%m-%d')}")
+            
+            # Собираем исторические доходности для всех активов
+            all_returns = {}
+            
+            for ticker in assets:
+                try:
+                    # Загружаем данные для отдельного тикера (как в agent_integration.py)
+                    ticker_data = yf.download(
+                        ticker, 
+                        start=start_date.strftime("%Y-%m-%d"), 
+                        end=end_date.strftime("%Y-%m-%d"),
+                        progress=False,
+                        auto_adjust=True
+                    )
+                    
+                    # Пропускаем пустые данные
+                    if ticker_data.empty:
+                        logger.warning(f"No historical data for {ticker}, skipping")
+                        continue
+                    
+                    # Получаем цены закрытия
+                    close_column = 'Close'
+                    if isinstance(ticker_data.columns, pd.MultiIndex):
+                        # Обрабатываем MultiIndex формат
+                        try:
+                            close_prices = ticker_data.xs('Close', level=0, axis=1)
+                            if isinstance(close_prices, pd.Series):
+                                close_prices = pd.DataFrame(close_prices)
+                        except Exception as e:
+                            logger.error(f"Error accessing MultiIndex data for {ticker}: {e}")
+                            continue
+                    else:
+                        # Обрабатываем обычный DataFrame
+                        if close_column not in ticker_data.columns:
+                            alternative_close = 'Adj Close' if 'Adj Close' in ticker_data.columns else None
+                            if alternative_close:
+                                close_column = alternative_close
+                            else:
+                                logger.warning(f"No price column found for {ticker}, skipping")
+                                continue
+                        close_prices = ticker_data[close_column]
+                    
+                    # Получаем ежедневные логарифмические доходности
+                    log_returns = np.log(close_prices / close_prices.shift(1)).dropna()
+                    
+                    if len(log_returns) < 50:  # Минимум данных для HRP
+                        logger.warning(f"Insufficient data for {ticker}: {len(log_returns)} days")
+                        continue
+                    
+                    # Сохраняем для HRP
+                    all_returns[ticker] = log_returns
+                    logger.debug(f"Loaded {len(log_returns)} returns for {ticker}")
+                    
+                except Exception as e:
+                    logger.warning(f"Error loading data for {ticker}: {e}")
+                    continue
+            
+            # Проверяем что у нас достаточно данных
+            if len(all_returns) < 3:
+                return {
+                    "error": f"Недостаточно исторических данных для HRP: получены данные только для {len(all_returns)} активов",
+                    "weights": None,
+                    "exp_ret": None,
+                    "risk": None,
+                    "sharpe": None,
+                    "snapshot_id": snapshot_id
+                }
+            
+            # Создаем общий индекс для всех рядов (как в agent_integration.py)
+            common_index = pd.DatetimeIndex([])
+            for ticker, returns in all_returns.items():
+                common_index = common_index.union(returns.index)
+            
+            # Создаем DataFrame с общим индексом и заполняем его доходностями
+            returns_df = pd.DataFrame(index=common_index)
+            for ticker, returns in all_returns.items():
+                returns_df[ticker] = returns
+            
+            # Убираем строки где все значения NaN
+            returns_df = returns_df.dropna(how='all')
+            
+            # Проверяем качество данных
+            if returns_df.empty:
+                return {
+                    "error": "Исторические данные пусты после обработки",
+                    "weights": None,
+                    "exp_ret": None,
+                    "risk": None,
+                    "sharpe": None,
+                    "snapshot_id": snapshot_id
+                }
+            
+            logger.info(f"Подготовлен dataset с {len(returns_df)} наблюдениями для {len(returns_df.columns)} активов")
+            
+            # Обновляем список активов только теми, для которых есть данные
+            assets = [ticker for ticker in assets if ticker in returns_df.columns]
+            returns_df = returns_df[assets]
+            
+            # Создаем HRP оптимизатор с реальными историческими данными
+            hrp = HRPOpt(returns_df)
+            
+            # Оптимизация
+            weights = hrp.optimize()
+            
+            # Фильтруем веса менее min_weight
+            weights = {ticker: weight for ticker, weight in weights.items() 
+                      if weight >= min_weight}
+            
+            # Перенормализуем веса после фильтрации
+            total_weight = sum(weights.values())
+            if total_weight > 0:
+                weights = {ticker: weight/total_weight for ticker, weight in weights.items()}
+            else:
+                logger.error("All weights filtered out - reducing min_weight threshold")
+                # Берем топ-N активов если все веса слишком малы
+                original_weights = hrp.optimize()
+                sorted_weights = sorted(original_weights.items(), key=lambda x: x[1], reverse=True)
+                top_n = min(10, len(sorted_weights))  # Берем топ-10 или все доступные
+                weights = dict(sorted_weights[:top_n])
+                total_weight = sum(weights.values())
+                weights = {ticker: weight/total_weight for ticker, weight in weights.items()}
+            
+            logger.info(f"HRP optimization successful. Active assets: {len(weights)}")
+            
+            # Рассчитываем ожидаемые метрики портфеля используя mu и sigma из snapshot
+            portfolio_mu = sum(mu_dict[ticker] * weight for ticker, weight in weights.items())
+            
+            # Получаем ковариационную матрицу из snapshot для расчета риска
+            cov_matrix = pd.DataFrame(sigma_dict).loc[assets, assets]
+            
+            # Рассчитываем волатильность портфеля через ковариационную матрицу
+            weight_vector = pd.Series(index=assets, data=0.0)
+            for ticker, weight in weights.items():
+                weight_vector[ticker] = weight
+            
+            # Используем ковариационную матрицу из snapshot для расчета риска
+            portfolio_variance = weight_vector.T @ cov_matrix @ weight_vector
+            portfolio_risk = np.sqrt(portfolio_variance)
+            
+            # Sharpe ratio
+            sharpe_ratio = (portfolio_mu - risk_free_rate) / portfolio_risk if portfolio_risk > 0 else 0
+            
+            return {
+                "weights": weights,
+                "exp_ret": float(portfolio_mu),
+                "risk": float(portfolio_risk),
+                "sharpe": float(sharpe_ratio),
+                "snapshot_id": snapshot_id,
+                "method": "HRP"
+            }
+            
+        except Exception as e:
+            logger.error(f"HRP optimization failed: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            return {"error": f"HRP optimization error: {e}", "weights": None, "exp_ret": None, "risk": None, "sharpe": None, "snapshot_id": snapshot_id}
+
+    # Для остальных методов (Markowitz, Black-Litterman) используем старую логику
     try:
         # Convert mu to Series and sigma to DataFrame
         mu_series = pd.Series(mu_dict).loc[assets] # Ensure order
@@ -133,7 +317,7 @@ def optimize_tool(
         return {"error": f"Data processing error: {e}", "weights": None, "exp_ret": None, "risk": None, "sharpe": None, "snapshot_id": snapshot_id}
 
     # Determine mu_final and S_final based on method
-    S_final = S_df  # Use snapshot's covariance matrix for EF for both methods for now
+    S_final = S_df
 
     if method.lower() == "black_litterman":
         tau = 0.05  # As specified
@@ -173,8 +357,11 @@ def optimize_tool(
     elif method.lower() == "markowitz":
         logger.info("Using Markowitz optimization with snapshot mu.")
         mu_final = mu_series
+    elif method.lower() == "target_return":
+        logger.info("Using Target Return optimization with snapshot mu.")
+        mu_final = mu_series
     else:
-        logger.error(f"Invalid optimization method: {method}. Choose 'black_litterman' or 'markowitz'.")
+        logger.error(f"Invalid optimization method: {method}. Choose 'hrp', 'black_litterman', 'markowitz', or 'target_return'.")
         return {"error": f"Invalid method: {method}", "weights": None, "exp_ret": None, "risk": None, "sharpe": None, "snapshot_id": snapshot_id}
 
     # Portfolio Optimization using EfficientFrontier
@@ -186,7 +373,36 @@ def optimize_tool(
 
     try:
         ef = EfficientFrontier(mu_final, S_final, weight_bounds=weight_bounds)
-        ef.max_sharpe(risk_free_rate=risk_free_rate) # Optimize for max Sharpe ratio
+        
+        # Выбираем метод оптимизации
+        if method.lower() == "target_return":
+            if target_return is None:
+                logger.error("target_return must be specified for target_return method")
+                return {"error": "target_return parameter required for target_return method", 
+                       "weights": None, "exp_ret": None, "risk": None, "sharpe": None, "snapshot_id": snapshot_id}
+            
+            logger.info(f"Optimizing for target return: {target_return:.2%}")
+            
+            # Проверяем, достижима ли целевая доходность
+            min_ret = mu_final.min()
+            max_ret = mu_final.max()
+            if target_return < min_ret or target_return > max_ret:
+                logger.warning(f"Target return {target_return:.2%} is outside feasible range [{min_ret:.2%}, {max_ret:.2%}]")
+                # Клампируем к допустимому диапазону
+                target_return = max(min_ret, min(max_ret, target_return))
+                logger.info(f"Adjusted target return to: {target_return:.2%}")
+            
+            try:
+                ef.efficient_return(target_return=target_return)
+            except Exception as e:
+                logger.error(f"Failed to optimize for target return {target_return:.2%}: {e}")
+                # Fallback to max Sharpe if target return optimization fails
+                logger.info("Falling back to max Sharpe optimization")
+                ef.max_sharpe(risk_free_rate=risk_free_rate)
+        else:
+            # Стандартная оптимизация по максимальному Sharpe ratio
+            ef.max_sharpe(risk_free_rate=risk_free_rate)
+        
         cleaned_weights = ef.clean_weights()
         
         # Portfolio performance
@@ -198,12 +414,14 @@ def optimize_tool(
         return {"error": f"Optimization error: {e}", "weights": None, "exp_ret": None, "risk": None, "sharpe": None, "snapshot_id": snapshot_id}
 
     logger.info(f"Optimization successful. Weights: {cleaned_weights}")
+    method_name = method.upper() if method.lower() != "target_return" else f"Target Return ({target_return:.1%})"
     return {
         "weights": cleaned_weights,
         "exp_ret": perf_exp_ret,
         "risk": perf_risk,  # This is volatility (standard deviation)
         "sharpe": perf_sharpe,
-        "snapshot_id": snapshot_id
+        "snapshot_id": snapshot_id,
+        "method": method_name
     }
 
 if __name__ == '__main__':

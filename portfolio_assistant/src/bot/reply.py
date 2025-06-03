@@ -2,7 +2,7 @@ import os
 import uuid
 import logging
 from typing import List, Optional, Dict, Any, Union
-from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
+from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup
 from telegram.constants import ParseMode
 from telegram.ext import CallbackContext
 
@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 async def send_markdown(update: Update, context: CallbackContext, text: str, 
                       add_disclaimer: bool = True, 
-                      reply_markup: Optional[InlineKeyboardMarkup] = None) -> int:
+                      reply_markup: Optional[Union[InlineKeyboardMarkup, ReplyKeyboardMarkup]] = None) -> int:
     """
     Отправляет markdown-форматированное сообщение пользователю.
     
@@ -56,7 +56,7 @@ async def send_markdown(update: Update, context: CallbackContext, text: str,
 async def send_photo(update: Update, context: CallbackContext, 
                    photo_path: str, 
                    caption: Optional[str] = None, 
-                   reply_markup: Optional[InlineKeyboardMarkup] = None) -> int:
+                   reply_markup: Optional[Union[InlineKeyboardMarkup, ReplyKeyboardMarkup]] = None) -> int:
     """
     Отправляет изображение пользователю.
     

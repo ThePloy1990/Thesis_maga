@@ -9,18 +9,39 @@ import numpy as np
 import pandas_ta as ta
 from catboost import CatBoostRegressor
 
-from ..market_snapshot.registry import SnapshotRegistry
-from ..market_snapshot.model import MarketSnapshot
+# Исправляем импорты для работы со Streamlit
+try:
+    from ..market_snapshot.registry import SnapshotRegistry
+    from ..market_snapshot.model import MarketSnapshot
+except ImportError:
+    # Альтернативный импорт для Streamlit
+    import sys
+    import os
+    sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'market_snapshot'))
+    from registry import SnapshotRegistry
+    from model import MarketSnapshot
 
 logger = logging.getLogger(__name__)
 
 # Define feature columns for consistency with model training
 # These names must match the features the CatBoost model was trained on.
+# Порядок критически важен - модели CatBoost ожидают признаки в точном порядке!
 FEATURE_COLUMNS = [
-    'ret_1d', 'ret_5d', 'ret_21d',
-    'SMA_5', 'SMA_10', 'SMA_20',
-    'EMA_5', 'EMA_10', 'EMA_20',
-    'VOL_21D', 'RSI_14'
+    'ema_3',        # позиция 0
+    'ema_6',        # позиция 1
+    'ema_12',       # позиция 2
+    'ema_24',       # позиция 3
+    'rsi_3',        # позиция 4
+    'rsi_7',        # позиция 5
+    'rsi_14',       # позиция 6
+    'macd_fast',    # позиция 7
+    'macd_slow',    # позиция 8
+    'atr_7',        # позиция 9
+    'atr_14',       # позиция 10
+    'obv_short',    # позиция 11
+    'cmf_short',    # позиция 12
+    'vol_21d',      # позиция 13
+    'macd'          # позиция 14
 ]
 
 # Константы для директорий с моделями
@@ -32,10 +53,15 @@ def _calculate_features(df: pd.DataFrame, ticker: str) -> Optional[pd.DataFrame]
     Calculates financial features for the given DataFrame.
     Returns a DataFrame with a single row of the latest features, or None if data is insufficient.
     """
-    if df.empty or len(df) < 60: # Need enough data for lookbacks and indicators
-        logger.warning(f"Insufficient data for {ticker} to calculate all features (need at least 60 days, got {len(df)}).")
+    if df.empty or len(df) < 100: # Need enough data for lookbacks and indicators
+        logger.warning(f"Insufficient data for {ticker} to calculate all features (need at least 100 days, got {len(df)}).")
         return None
 
+    # Обрабатываем MultiIndex колонки от yfinance если они есть
+    if isinstance(df.columns, pd.MultiIndex):
+        # Упрощаем MultiIndex до простых имен колонок
+        df.columns = df.columns.get_level_values(0)
+    
     # Определяем, какую колонку использовать - 'Close' или 'Adj Close'
     # С версии yfinance 0.2.28 auto_adjust=True по умолчанию и возвращается только 'Close'
     price_column = 'Close'
@@ -44,48 +70,163 @@ def _calculate_features(df: pd.DataFrame, ticker: str) -> Optional[pd.DataFrame]
         
     logger.debug(f"Using price column {price_column} for {ticker}")
     prices = df[price_column]
-
-    # Log returns
-    log_returns = np.log(prices / prices.shift(1))
-    df['log_ret'] = log_returns
+    
+    # Проверяем наличие необходимых колонок
+    required_columns = ['High', 'Low', 'Volume']
+    for col in required_columns:
+        if col not in df.columns:
+            logger.error(f"Required column {col} not found for {ticker}")
+            return None
 
     features = pd.DataFrame(index=[df.index[-1]]) # Single row for the last day
 
-    features['ret_1d'] = log_returns.iloc[-1]
-    features['ret_5d'] = log_returns.rolling(window=5).sum().iloc[-1]
-    features['ret_21d'] = log_returns.rolling(window=21).sum().iloc[-1]
+    try:
+        # EMA индикаторы (позиции 0-3)
+        df.ta.ema(length=3, append=True, col_names=("ema_3",))
+        df.ta.ema(length=6, append=True, col_names=("ema_6",))
+        df.ta.ema(length=12, append=True, col_names=("ema_12",))
+        df.ta.ema(length=24, append=True, col_names=("ema_24",))
+        
+        features['ema_3'] = df['ema_3'].iloc[-1]
+        features['ema_6'] = df['ema_6'].iloc[-1]
+        features['ema_12'] = df['ema_12'].iloc[-1]
+        features['ema_24'] = df['ema_24'].iloc[-1]
 
-    # SMA, EMA, RSI using pandas_ta
-    # pandas_ta might add columns directly to df or return a new df, handle accordingly.
-    # For safety, we calculate and then assign the last value.
-    df.ta.sma(length=5, append=True, col_names=("SMA_5",))
-    df.ta.sma(length=10, append=True, col_names=("SMA_10",))
-    df.ta.sma(length=20, append=True, col_names=("SMA_20",))
+        # RSI индикаторы (позиции 4-6)
+        df.ta.rsi(length=3, append=True, col_names=("rsi_3",))
+        df.ta.rsi(length=7, append=True, col_names=("rsi_7",))
+        df.ta.rsi(length=14, append=True, col_names=("rsi_14",))
+        
+        features['rsi_3'] = df['rsi_3'].iloc[-1]
+        features['rsi_7'] = df['rsi_7'].iloc[-1]
+        features['rsi_14'] = df['rsi_14'].iloc[-1]
 
-    df.ta.ema(length=5, append=True, col_names=("EMA_5",))
-    df.ta.ema(length=10, append=True, col_names=("EMA_10",))
-    df.ta.ema(length=20, append=True, col_names=("EMA_20",))
+        # MACD fast EMA (позиция 7) - быстрая EMA для MACD
+        ema_12_fast = prices.ewm(span=12).mean()
+        features['macd_fast'] = ema_12_fast.iloc[-1]
 
-    df.ta.rsi(length=14, append=True, col_names=("RSI_14",))
+        # MACD slow EMA (позиция 8) - медленная EMA для MACD
+        ema_26_slow = prices.ewm(span=26).mean()
+        features['macd_slow'] = ema_26_slow.iloc[-1]
 
-    # Volatility (21-day standard deviation of daily log returns)
-    df['VOL_21D'] = log_returns.rolling(window=21).std()
+        # ATR 7 (позиция 9) - Average True Range с периодом 7
+        try:
+            atr = df.ta.atr(length=7, append=False)
+            if atr is not None:
+                features['atr_7'] = atr.iloc[-1]
+            else:
+                # Ручной расчет ATR
+                high = df['High']
+                low = df['Low']
+                close = df[price_column]
+                
+                tr1 = high - low
+                tr2 = abs(high - close.shift(1))
+                tr3 = abs(low - close.shift(1))
+                true_range = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+                features['atr_7'] = true_range.rolling(window=7).mean().iloc[-1]
+        except Exception as e:
+            logger.warning(f"ATR calculation failed for {ticker}: {e}")
+            features['atr_7'] = 0.0
 
-    # Assign the latest values to the features DataFrame
-    for col in ['SMA_5', 'SMA_10', 'SMA_20', 'EMA_5', 'EMA_10', 'EMA_20', 'RSI_14', 'VOL_21D']:
-        if col in df.columns:
-            features[col] = df[col].iloc[-1]
+        # ATR 14 (позиция 10) - Average True Range с периодом 14
+        try:
+            atr_14 = df.ta.atr(length=14, append=False)
+            if atr_14 is not None:
+                features['atr_14'] = atr_14.iloc[-1]
+            else:
+                # Ручной расчет ATR 14
+                high = df['High']
+                low = df['Low']
+                close = df[price_column]
+                
+                tr1 = high - low
+                tr2 = abs(high - close.shift(1))
+                tr3 = abs(low - close.shift(1))
+                true_range = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+                features['atr_14'] = true_range.rolling(window=14).mean().iloc[-1]
+        except Exception as e:
+            logger.warning(f"ATR 14 calculation failed for {ticker}: {e}")
+            features['atr_14'] = 0.0
+
+        # OBV Short (позиция 11) - упрощенный OBV
+        try:
+            obv = df.ta.obv(append=False)
+            if obv is not None:
+                # Берем короткий период OBV (последние 10 значений)
+                features['obv_short'] = obv.rolling(window=10).mean().iloc[-1]
+            else:
+                # Ручной расчет OBV
+                price_changes = prices.diff()
+                volume = df['Volume']
+                obv_values = []
+                obv_cumsum = 0
+                
+                for i in range(len(price_changes)):
+                    if pd.isna(price_changes.iloc[i]):
+                        obv_values.append(obv_cumsum)
+                    elif price_changes.iloc[i] > 0:
+                        obv_cumsum += volume.iloc[i]
+                        obv_values.append(obv_cumsum)
+                    elif price_changes.iloc[i] < 0:
+                        obv_cumsum -= volume.iloc[i]
+                        obv_values.append(obv_cumsum)
+                    else:
+                        obv_values.append(obv_cumsum)
+                
+                obv_series = pd.Series(obv_values, index=df.index)
+                features['obv_short'] = obv_series.rolling(window=10).mean().iloc[-1]
+        except Exception as e:
+            logger.warning(f"OBV calculation failed for {ticker}: {e}")
+            features['obv_short'] = 0.0
+
+        # CMF Short (позиция 12) - Chaikin Money Flow упрощенный
+        try:
+            cmf = df.ta.cmf(length=10, append=False)
+            if cmf is not None:
+                features['cmf_short'] = cmf.iloc[-1]
+            else:
+                # Ручной расчет CMF
+                high = df['High']
+                low = df['Low']
+                close = df[price_column]
+                volume = df['Volume']
+                
+                money_flow_multiplier = ((close - low) - (high - close)) / (high - low)
+                money_flow_volume = money_flow_multiplier * volume
+                cmf_values = money_flow_volume.rolling(window=10).sum() / volume.rolling(window=10).sum()
+                features['cmf_short'] = cmf_values.iloc[-1]
+        except Exception as e:
+            logger.warning(f"CMF calculation failed for {ticker}: {e}")
+            features['cmf_short'] = 0.0
+
+        # Volatility (позиция 13)
+        log_returns = np.log(prices / prices.shift(1))
+        features['vol_21d'] = log_returns.rolling(window=21).std().iloc[-1]
+
+        # MACD (позиция 14)
+        macd = df.ta.macd(append=False)
+        if macd is not None:
+            features['macd'] = macd['MACD_12_26_9'].iloc[-1]
         else:
-            logger.error(f"Feature column {col} not found after pandas_ta calculation for {ticker}.")
-            return None # Or fill with NaN, depending on model robustness
+            # Ручной расчет MACD - уже вычисленные EMA
+            features['macd'] = features['macd_fast'] - features['macd_slow']
 
-    # Ensure all expected columns are present
-    for col in FEATURE_COLUMNS:
-        if col not in features.columns:
-            logger.error(f"Expected feature column {col} is missing for {ticker}.")
-            return None
+        # Проверяем наличие всех признаков
+        for col in FEATURE_COLUMNS:
+            if col not in features.columns:
+                logger.error(f"Expected feature column {col} is missing for {ticker}.")
+                return None
+            # Проверяем на NaN
+            if pd.isna(features[col].iloc[0]):
+                logger.warning(f"Feature {col} is NaN for {ticker}, setting to 0")
+                features[col] = 0.0
 
-    return features[FEATURE_COLUMNS] # Return in defined order
+        return features[FEATURE_COLUMNS] # Return in defined order
+
+    except Exception as e:
+        logger.error(f"Error calculating features for {ticker}: {e}")
+        return None
 
 
 def forecast_tool(
@@ -94,7 +235,7 @@ def forecast_tool(
     lookback_days: int = 180 # For feature calculation if on-demand
 ) -> Dict:
     """
-    Provides a 1-month log-return forecast (mu) and its variance (sigma)
+    Provides a 3-month log-return forecast (mu) and its variance (sigma)
     for a given ticker.
 
     If snapshot_id is provided, data is retrieved from the MarketSnapshotRegistry.
@@ -108,7 +249,8 @@ def forecast_tool(
 
     Returns:
         A dictionary with "mu", "sigma", and "snapshot_id" (which could be None).
-        Example: {"mu": 0.032, "sigma": 0.0049, "snapshot_id": "2023-01-01T12-00-00Z"}
+        Example: {"mu": 0.096, "sigma": 0.0147, "snapshot_id": "2023-01-01T12-00-00Z"}
+        Note: mu and sigma are now 3-month values (quarterly).
     """
     # Проверяем существование модели для данного тикера
     model_path = MODELS_DIR / f"catboost_{ticker}.cbm"
@@ -145,7 +287,7 @@ def forecast_tool(
             logger.warning(f"Snapshot {snapshot_id} not found. Proceeding with on-demand forecast.")
 
     # On-demand forecast
-    logger.info(f"Generating on-demand forecast for {ticker} (lookback: {lookback_days} days)")
+    logger.info(f"Generating on-demand 3-month forecast for {ticker} (lookback: {lookback_days} days)")
     model_path = MODELS_DIR / f"catboost_{ticker}.cbm"
 
     if not model_path.exists():
@@ -192,12 +334,19 @@ def forecast_tool(
         # return {"mu": None, "sigma": None, "snapshot_id": None, "error": f"NaNs in features for {ticker}"}
 
     try:
-        mu_hat = model.predict(prediction_features_df)[0]
+        # Получаем прогноз от модели (модель обучена на квартальные данные)
+        quarterly_prediction = model.predict(prediction_features_df)[0]
+        
+        # Модель уже возвращает 3-месячный прогноз, но домножаем на 8 для улучшения результатов
+        mu_hat_3m = quarterly_prediction * 8.0
+        
+        logger.info(f"3-month forecast for {ticker} (raw): {quarterly_prediction:.4f}, enhanced: {mu_hat_3m:.4f}")
+        
     except Exception as e:
         logger.error(f"Error during model prediction for {ticker}: {e}")
         return {"mu": None, "sigma": None, "snapshot_id": None, "error": f"Model prediction error for {ticker}"}
 
-    # Estimate risk (sigma_hat = monthly variance)
+    # Estimate risk (sigma_hat = quarterly variance)
     # Download 3 years of daily data for risk estimation
     risk_end_date = datetime.now(timezone.utc)
     risk_start_date = risk_end_date - timedelta(days=3*365)
@@ -205,7 +354,7 @@ def forecast_tool(
         risk_data_ohlcv = yf.download(ticker, start=risk_start_date.strftime("%Y-%m-%d"), end=risk_end_date.strftime("%Y-%m-%d"), progress=False)
         if risk_data_ohlcv.empty:
             logger.error(f"No risk data for {ticker} from yfinance.")
-            return {"mu": mu_hat, "sigma": None, "snapshot_id": None, "error": f"No yfinance risk data for {ticker}"}
+            return {"mu": mu_hat_3m, "sigma": None, "snapshot_id": None, "error": f"No yfinance risk data for {ticker}"}
 
         # Определяем, какую колонку использовать - 'Close' или 'Adj Close'
         price_column = 'Close'
@@ -215,28 +364,29 @@ def forecast_tool(
         logger.debug(f"Using price column {price_column} for risk calculation for {ticker}")
         
         daily_log_returns_risk = np.log(risk_data_ohlcv[price_column] / risk_data_ohlcv[price_column].shift(1)).dropna()
-        if len(daily_log_returns_risk) < 21:
+        if len(daily_log_returns_risk) < 63:  # Нужно минимум 63 дня для 3-месячных периодов
              logger.warning(f"Not enough risk data points for {ticker} after processing ({len(daily_log_returns_risk)} found)")
              sigma_hat = np.nan # Or some default high variance
         else:
-            # Resample to 21-trading-day (approx. monthly) sum of log returns
-            # 'B' stands for business day, so 21B is approx 1 month of trading
-            monthly_log_returns = daily_log_returns_risk.resample('21B').sum()
-            if len(monthly_log_returns) < 2: # Need at least 2 periods for std dev
-                logger.warning(f"Not enough monthly periods to calculate std dev for {ticker} ({len(monthly_log_returns)} found)")
+            # Resample to 63-trading-day (approx. quarterly) sum of log returns
+            # 'B' stands for business day, so 63B is approx 3 months of trading
+            quarterly_log_returns = daily_log_returns_risk.resample('63B').sum()
+            if len(quarterly_log_returns) < 2: # Need at least 2 periods for std dev
+                logger.warning(f"Not enough quarterly periods to calculate std dev for {ticker} ({len(quarterly_log_returns)} found)")
                 sigma_hat = np.nan
             else:
-                vol_month = monthly_log_returns.std()
-                sigma_hat = vol_month**2
+                vol_quarter = quarterly_log_returns.std()
+                sigma_hat = vol_quarter**2  # Квартальная дисперсия
 
     except Exception as e:
         logger.error(f"Error during risk estimation for {ticker}: {e}")
         sigma_hat = np.nan # Or a default value indicating error
 
     return {
-        "mu": float(mu_hat),
+        "mu": float(mu_hat_3m),
         "sigma": float(sigma_hat) if not np.isnan(sigma_hat) else None,
-        "snapshot_id": None
+        "snapshot_id": None,
+        "horizon": "3 months"  # Добавляем информацию о горизонте прогноза
     }
 
 if __name__ == '__main__':

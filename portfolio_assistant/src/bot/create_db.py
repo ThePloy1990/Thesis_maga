@@ -51,8 +51,9 @@ def list_users():
         users = []
         
         for user_key in user_keys:
-            # Извлекаем ID пользователя из ключа
-            user_id_str = user_key.replace(USER_STATE_PREFIX, "")
+            # Извлекаем ID пользователя из ключа (преобразуем bytes в str)
+            user_key_str = user_key.decode('utf-8') if isinstance(user_key, bytes) else user_key
+            user_id_str = user_key_str.replace(USER_STATE_PREFIX, "")
             try:
                 user_id = int(user_id_str)
                 
@@ -131,9 +132,17 @@ def reset_db():
         user_keys = redis_client.keys(f"{USER_STATE_PREFIX}*")
         
         if user_keys:
+            # Преобразуем ключи в строки если они bytes
+            user_keys_fixed = []
+            for key in user_keys:
+                if isinstance(key, bytes):
+                    user_keys_fixed.append(key.decode('utf-8'))
+                else:
+                    user_keys_fixed.append(key)
+            
             # Удаляем все ключи
-            redis_client.delete(*user_keys)
-            logger.info(f"Deleted {len(user_keys)} user records from database")
+            redis_client.delete(*user_keys_fixed)
+            logger.info(f"Deleted {len(user_keys_fixed)} user records from database")
         else:
             logger.info("No users found in database")
         

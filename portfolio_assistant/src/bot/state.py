@@ -77,12 +77,24 @@ def create_default_state(user_id: int) -> Dict[str, Any]:
     Returns:
         Dictionary с состоянием пользователя по умолчанию
     """
+    # Автоматически назначаем последний снапшот для нового пользователя
+    last_snapshot_id = None
+    try:
+        from ..market_snapshot.registry import SnapshotRegistry
+        registry = SnapshotRegistry()
+        latest_snapshot = registry.latest()
+        if latest_snapshot:
+            last_snapshot_id = latest_snapshot.meta.id or latest_snapshot.meta.snapshot_id
+            logger.info(f"Assigned latest snapshot {last_snapshot_id} to new user {user_id}")
+    except Exception as e:
+        logger.warning(f"Failed to get latest snapshot for new user {user_id}: {e}")
+    
     return {
         "user_id": user_id,
         "risk_profile": "moderate",
         "budget": 10000,  # Значение по умолчанию 10,000 USD
         "positions": {},  # Пустой портфель по умолчанию
-        "last_snapshot_id": None,  # Будет заполнено при первом запросе снапшота
+        "last_snapshot_id": last_snapshot_id,  # Автоматически назначается последний снапшот
         "dialog_memory": [],  # Пустая история диалога
         "portfolio_history": []  # История портфельных позиций
     }
