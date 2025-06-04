@@ -53,6 +53,19 @@ except ImportError as e:
     st.warning("⚠️ Telegram интеграция недоступна. Установите python-telegram-bot для отправки отчетов.")
     TELEGRAM_AVAILABLE = False
 
+# Импорт системы состояния пользователя
+try:
+    from portfolio_assistant.src.bot.state import (
+        get_user_state,
+        get_all_user_ids,
+        update_positions,
+        redis_client
+    )
+    USER_STATE_AVAILABLE = True
+except ImportError as e:
+    st.warning("⚠️ Система состояния пользователя недоступна.")
+    USER_STATE_AVAILABLE = False
+
 # Кастомные стили
 st.markdown("""
 <style>
@@ -101,6 +114,89 @@ st.markdown("---")
 
 # Sidebar для настроек
 st.sidebar.header("⚙️ Настройки портфеля")
+
+# Выбор пользователя (если доступна система состояния)
+selected_user_id = None
+user_state = None
+
+if USER_STATE_AVAILABLE:
+    st.sidebar.subheader("👤 Выбор пользователя")
+    
+    def get_user_list():
+        """Получает список пользователей из Redis"""
+        try:
+            user_ids = get_all_user_ids()
+            if user_ids:
+                return sorted(user_ids)
+            return []
+        except Exception as e:
+            st.sidebar.error(f"Ошибка получения пользователей: {e}")
+            return []
+    
+    user_ids = get_user_list()
+    
+    if user_ids:
+        # Выбор из существующих пользователей
+        user_option = st.sidebar.radio(
+            "Источник данных:",
+            ["Существующий пользователь", "Ввести User ID", "Новый портфель"]
+        )
+        
+        if user_option == "Существующий пользователь":
+            selected_user_id = st.sidebar.selectbox(
+                "Выберите пользователя:",
+                options=user_ids,
+                help="Выберите пользователя из списка"
+            )
+        elif user_option == "Ввести User ID":
+            selected_user_id = st.sidebar.number_input(
+                "Введите User ID:",
+                min_value=1,
+                value=1,
+                help="Введите ID пользователя вручную"
+            )
+        else:  # Новый портфель
+            selected_user_id = None
+    else:
+        # Если нет пользователей, предлагаем ввести ID
+        user_option = st.sidebar.radio(
+            "Источник данных:",
+            ["Ввести User ID", "Новый портфель"]
+        )
+        
+        if user_option == "Ввести User ID":
+            selected_user_id = st.sidebar.number_input(
+                "Введите User ID:",
+                min_value=1,
+                value=1,
+                help="Введите ID пользователя вручную"
+            )
+        else:
+            selected_user_id = None
+    
+    # Загружаем состояние пользователя если выбран
+    if selected_user_id:
+        try:
+            user_state = get_user_state(selected_user_id)
+            st.sidebar.success(f"✅ Загружены данные пользователя {selected_user_id}")
+            
+            # Показываем информацию о пользователе
+            with st.sidebar.expander("📊 Информация о пользователе"):
+                st.write(f"**Risk Profile:** {user_state.get('risk_profile', 'не указан')}")
+                st.write(f"**Budget:** ${user_state.get('budget', 0):,.2f}")
+                positions = user_state.get('positions', {})
+                st.write(f"**Позиций в портфеле:** {len(positions)}")
+                if positions:
+                    st.write("**Текущие позиции:**")
+                    for ticker, amount in list(positions.items())[:5]:  # Показываем первые 5
+                        st.write(f"• {ticker}: {amount:.2f}")
+                    if len(positions) > 5:
+                        st.write(f"... и еще {len(positions)-5}")
+        except Exception as e:
+            st.sidebar.error(f"Ошибка загрузки пользователя: {e}")
+            user_state = None
+else:
+    st.sidebar.info("💡 Система состояния пользователя недоступна. Используется режим нового портфеля.")
 
 # Загрузка доступных снапшотов
 def get_available_snapshots():
@@ -202,13 +298,13 @@ def main():
     performance_results = None
     
     with tab1:
-        show_portfolio_overview(snapshot_data)
+        show_portfolio_overview(snapshot_data, user_state, selected_user_id)
     
     with tab2:
-        optimization_results = show_optimization_results(snapshot_data)
+        optimization_results = show_optimization_results(snapshot_data, user_state, selected_user_id)
     
     with tab3:
-        performance_results = show_performance_analysis()
+        performance_results = show_performance_analysis(user_state, selected_user_id)
     
     with tab4:
         show_forecasts(snapshot_data)
@@ -222,11 +318,77 @@ def main():
         perf_results = st.session_state.get('performance_results', performance_results)
         show_telegram_sender(opt_results, snapshot_data, perf_results)
 
-def show_portfolio_overview(snapshot_data):
+def show_portfolio_overview(snapshot_data, user_state, selected_user_id):
     """Обзор портфеля"""
     st.header("📊 Обзор портфеля")
     
+    # Если есть данные пользователя, показываем его портфель
+    if user_state and user_state.get('positions'):
+        positions = user_state.get('positions', {})
+        budget = user_state.get('budget', 0)
+        
+        st.subheader(f"💼 Портфель пользователя {selected_user_id}")
+        
+        # Рассчитываем стоимость портфеля
+        prices = snapshot_data.get('prices', {})
+        total_value = 0
+        portfolio_data = []
+        
+        for ticker, shares in positions.items():
+            price = prices.get(ticker, 100.0)  # Дефолтная цена если нет в снапшоте
+            value = shares * price
+            total_value += value
+            
+            portfolio_data.append({
+                'Тикер': ticker,
+                'Количество акций': shares,
+                'Цена за акцию': price,
+                'Общая стоимость': value,
+                'Доля (%)': 0  # Рассчитаем после
+            })
+        
+        # Рассчитываем доли
+        for item in portfolio_data:
+            item['Доля (%)'] = (item['Общая стоимость'] / total_value * 100) if total_value > 0 else 0
+        
+        # Показываем метрики
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("💰 Общая стоимость портфеля", f"${total_value:,.2f}")
+        with col2:
+            st.metric("🎯 Бюджет пользователя", f"${budget:,.2f}")
+        with col3:
+            usage_pct = (total_value / budget * 100) if budget > 0 else 0
+            st.metric("📊 Использование бюджета", f"{usage_pct:.1f}%")
+        with col4:
+            st.metric("📈 Количество позиций", len(positions))
+        
+        # Таблица позиций
+        if portfolio_data:
+            df_portfolio = pd.DataFrame(portfolio_data)
+            st.dataframe(
+                df_portfolio.style.format({
+                    'Количество акций': '{:.4f}',
+                    'Цена за акцию': '${:.2f}',
+                    'Общая стоимость': '${:,.2f}',
+                    'Доля (%)': '{:.2f}%'
+                }),
+                use_container_width=True
+            )
+            
+            # График распределения портфеля
+            fig = px.pie(
+                df_portfolio,
+                values='Общая стоимость',
+                names='Тикер',
+                title="Распределение портфеля по стоимости"
+            )
+            st.plotly_chart(fig, use_container_width=True)
+        
+        st.markdown("---")
+    
     # Общая информация о снапшоте
+    st.subheader("📊 Информация о рыночных данных")
     meta = snapshot_data.get('meta', {})
     col1, col2, col3, col4 = st.columns(4)
     
@@ -300,18 +462,43 @@ def show_portfolio_overview(snapshot_data):
             fig.update_layout(height=400, showlegend=False)
             st.plotly_chart(fig, use_container_width=True)
 
-def show_optimization_results(snapshot_data):
+def show_optimization_results(snapshot_data, user_state, selected_user_id):
     """Результаты оптимизации"""
     st.header("⚡ Результаты оптимизации портфеля")
     
+    # Опции оптимизации
+    optimization_source = st.radio(
+        "Источник для оптимизации:",
+        ["Новый портфель", "Использовать существующий портфель пользователя"] if user_state and user_state.get('positions') else ["Новый портфель"]
+    )
+    
+    input_tickers = []
+    
+    if optimization_source == "Использовать существующий портфель пользователя" and user_state:
+        positions = user_state.get('positions', {})
+        input_tickers = list(positions.keys())
+        st.info(f"📊 Будет использован существующий портфель с {len(input_tickers)} активами: {', '.join(input_tickers[:5])}{'...' if len(input_tickers) > 5 else ''}")
+    else:
+        st.info("🆕 Создается новый портфель с помощью автоматической оптимизации")
+    
     # Запускаем оптимизацию
     with st.spinner("🔄 Оптимизируем портфель..."):
-        result = optimize_portfolio(
-            optimization_method, 
-            snapshot_id, 
-            risk_free_rate, 
-            max_weight
-        )
+        if input_tickers:
+            # Оптимизируем с использованием конкретных тикеров
+            result = optimize_tool(
+                tickers=input_tickers,
+                snapshot_id=snapshot_id,
+                method=optimization_method,
+                risk_aversion=1.0,  # Можно добавить в sidebar
+            )
+        else:
+            # Стандартная оптимизация
+            result = optimize_tool(
+                method=optimization_method, 
+                snapshot_id=snapshot_id, 
+                risk_free_rate=risk_free_rate, 
+                max_weight=max_weight
+            )
     
     if result.get('error'):
         st.error(f"❌ Ошибка оптимизации: {result['error']}")
@@ -485,9 +672,66 @@ def show_optimization_results(snapshot_data):
     # Информационное сообщение для пользователя
     st.info("💡 Портфель оптимизирован! Перейдите во вкладку '📱 Telegram отчет' для отправки результатов.")
     
+    # Кнопка сохранения результатов в базу данных пользователя
+    if USER_STATE_AVAILABLE and selected_user_id:
+        st.markdown("---")
+        st.subheader("💾 Сохранение результатов")
+        
+        budget = user_state.get('budget', 10000) if user_state else 10000
+        budget_input = st.number_input(
+            "Бюджет для расчета позиций ($):",
+            min_value=100,
+            value=budget,
+            step=100,
+            help="Бюджет пользователя для конвертации весов в количество акций"
+        )
+        
+        if st.button("💾 Сохранить портфель в базу данных", type="primary"):
+            try:
+                # Конвертируем веса в позиции
+                from portfolio_assistant.src.market_snapshot.registry import SnapshotRegistry
+                
+                # Получаем цены из снапшота
+                registry = SnapshotRegistry()
+                snapshot = registry.load(snapshot_id)
+                prices = {}
+                if snapshot and hasattr(snapshot, 'prices') and snapshot.prices:
+                    prices = snapshot.prices
+                
+                # Конвертируем веса в позиции
+                new_positions = {}
+                total_allocated = 0.0
+                
+                for ticker, weight_percent in weights.items():
+                    stock_price = prices.get(ticker, 100.0)
+                    allocation_amount = budget_input * weight_percent
+                    shares_count = allocation_amount / stock_price
+                    new_positions[ticker] = shares_count
+                    total_allocated += allocation_amount
+                
+                # Сохраняем позиции в базу данных
+                success = update_positions(selected_user_id, new_positions)
+                
+                if success:
+                    st.success(f"✅ Портфель успешно сохранен для пользователя {selected_user_id}!")
+                    st.info(f"💰 Общее вложение: ${total_allocated:,.2f} из ${budget_input:,.2f} ({(total_allocated/budget_input)*100:.1f}%)")
+                    
+                    # Показываем детали сохраненных позиций
+                    with st.expander("📊 Детали сохраненных позиций"):
+                        for ticker, shares in new_positions.items():
+                            price = prices.get(ticker, 100.0)
+                            value = shares * price
+                            weight = weights.get(ticker, 0) * 100
+                            st.write(f"**{ticker}:** {shares:.4f} акций × ${price:.2f} = ${value:.2f} ({weight:.2f}%)")
+                else:
+                    st.error("❌ Ошибка при сохранении портфеля в базу данных")
+                    
+            except Exception as e:
+                st.error(f"❌ Ошибка: {str(e)}")
+    
     return result
 
-def show_performance_analysis():
+def show_performance_analysis(user_state, selected_user_id):
     """Анализ производительности"""
     st.header("📈 Анализ производительности портфеля")
     
@@ -806,7 +1050,7 @@ def show_snapshot_details(snapshot_data):
             color = 'red' if val < 0 else 'green' if val > 10 else 'black'
             return f'color: {color}'
         
-        styled_df = df_full.style.applymap(color_negative_red, subset=['Ожидаемая доходность (%)'])
+        styled_df = df_full.style.map(color_negative_red, subset=['Ожидаемая доходность (%)'])
         
         st.dataframe(styled_df, use_container_width=True, height=600)
     

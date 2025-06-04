@@ -271,6 +271,7 @@ def _run_portfolio_manager_sync(text: str, state: Dict[str, Any], user_id: int =
         9. build_efficient_frontier - построить эффективную границу для оптимальных портфелей по риск/доходность
         10. analyze_correlations - анализ корреляций между активами с визуализацией
         11. update_portfolio - обновить и зафиксировать позиции пользователя в портфеле (использовать когда пользователь просит "обновить портфель", "зафиксировать портфель", "принять портфель")
+        12. get_portfolio_metrics - получить уже известные метрики портфеля из истории диалога (коэффициент Шарпа, доходность, риск)
         
         ПРИМЕРЫ ИСПОЛЬЗОВАНИЯ НОВЫХ ИНСТРУМЕНТОВ:
         - "Создай консервативный портфель из топ-10 S&P 500" → get_index_composition("sp500_top10") + optimize_portfolio
@@ -279,6 +280,8 @@ def _run_portfolio_manager_sync(text: str, state: Dict[str, Any], user_id: int =
         - "Покажи эффективную границу для технологических акций" → build_efficient_frontier(sector="tech_giants")
         - "Какова корреляция между BTC и золотом?" → analyze_correlations для криптовалют и золота
         - "Обнови портфель" или "Зафиксируй портфель" → update_portfolio (автоматически найдет веса из предыдущего ответа)
+        - "Какой коэффициент Шарпа у моего портфеля?" → get_portfolio_metrics (найдет в истории диалога)
+        - "Какая доходность моего портфеля?" → get_portfolio_metrics (извлечет уже известные метрики)
         
         При создании портфеля:
         - Указывай что прогнозы на 3 месяца (квартальные)
@@ -287,6 +290,8 @@ def _run_portfolio_manager_sync(text: str, state: Dict[str, Any], user_id: int =
         - Подчеркивай что Alpha показывает превышение доходности над рынком (S&P 500)
         - Beta показывает чувствительность портфеля к рыночным движениям
         - Используй новые инструменты для более глубокого анализа
+        
+        ВАЖНО: Когда пользователь спрашивает про метрики своего портфеля (коэффициент Шарпа, доходность, риск), ВСЕГДА сначала используй get_portfolio_metrics чтобы получить уже известные значения из истории диалога. НЕ пытайся вычислить эти метрики самостоятельно или задавать значение 0.0 - используй инструмент!
         
         Отвечай на вопросы пользователя, используя доступные инструменты.
         Твой ответ должен быть в формате Markdown.
@@ -580,6 +585,18 @@ def _run_portfolio_manager_sync(text: str, state: Dict[str, Any], user_id: int =
                         "required": []
                     }
                 }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_portfolio_metrics",
+                    "description": "Получает уже известные метрики текущего портфеля пользователя из истории диалога. ОБЯЗАТЕЛЬНО используйте этот инструмент когда пользователь спрашивает о коэффициенте Шарпа, доходности или риске своего портфеля, а не пытайтесь вычислить самостоятельно. Извлекает: коэффициент Шарпа, ожидаемую доходность, риск.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {},
+                        "required": []
+                    }
+                }
             }
         ]
         
@@ -724,7 +741,14 @@ def _run_portfolio_manager_sync(text: str, state: Dict[str, Any], user_id: int =
             
             # Проверяем, есть ли веса для анализа
             if not weights:
-                return {"error": "Веса портфеля не предоставлены"}
+                logger.info("Weights not provided, trying to extract from dialog history")
+                # Пытаемся извлечь веса из истории диалога
+                portfolio_info = _find_portfolio_info_in_history()
+                if portfolio_info.get('weights'):
+                    weights = portfolio_info['weights']
+                    logger.info(f"Extracted weights from dialog history: {weights}")
+                else:
+                    return {"error": "Веса портфеля не предоставлены и не найдены в истории диалога"}
             
             # Проверяем, что все тикеры из доступного списка
             valid_weights = {t: w for t, w in weights.items() if t in available_tickers}
@@ -758,6 +782,49 @@ def _run_portfolio_manager_sync(text: str, state: Dict[str, Any], user_id: int =
             except Exception as e:
                 logger.error(f"Error in performance analysis: {str(e)}")
                 return {"error": f"Ошибка анализа производительности: {str(e)}"}
+        
+        def get_portfolio_metrics() -> Dict[str, Any]:
+            """Получает метрики портфеля (включая коэффициент Шарпа) из истории диалога."""
+            logger.info("Getting portfolio metrics from dialog history")
+            
+            try:
+                portfolio_info = _find_portfolio_info_in_history()
+                
+                if not portfolio_info:
+                    return {"error": "Информация о портфеле не найдена в истории диалога"}
+                
+                result = {}
+                
+                # Добавляем найденные метрики
+                if portfolio_info.get('metrics'):
+                    metrics = portfolio_info['metrics']
+                    result.update(metrics)
+                    
+                    # Форматируем метрики для лучшего отображения
+                    formatted_metrics = {}
+                    if 'expected_return' in metrics:
+                        formatted_metrics['Ожидаемая доходность'] = f"{metrics['expected_return']:.2f}%"
+                    if 'risk' in metrics:
+                        formatted_metrics['Риск (стандартное отклонение)'] = f"{metrics['risk']:.2f}%"
+                    if 'sharpe_ratio' in metrics:
+                        formatted_metrics['Коэффициент Шарпа'] = f"{metrics['sharpe_ratio']:.2f}"
+                    
+                    result['formatted_metrics'] = formatted_metrics
+                
+                # Добавляем информацию о весах если найдены
+                if portfolio_info.get('weights'):
+                    weights = portfolio_info['weights']
+                    result['weights_found'] = True
+                    result['tickers_count'] = len(weights)
+                    result['sample_weights'] = dict(list(weights.items())[:5])  # Показываем первые 5
+                else:
+                    result['weights_found'] = False
+                
+                return result
+                
+            except Exception as e:
+                logger.error(f"Error getting portfolio metrics: {str(e)}")
+                return {"error": f"Ошибка получения метрик портфеля: {str(e)}"}
         
         def get_index_composition(index_name: str) -> Dict[str, Any]:
             """Получает состав популярного фондового индекса."""
@@ -1038,6 +1105,91 @@ def _run_portfolio_manager_sync(text: str, state: Dict[str, Any], user_id: int =
                 logger.error(f"Error extracting weights from text: {e}")
                 return {}
         
+        def _extract_portfolio_metrics_from_text(text: str) -> Dict[str, float]:
+            """Извлекает метрики портфеля (доходность, риск, Шарп) из текста ответа модели."""
+            metrics = {}
+            
+            try:
+                import re
+                
+                # Поиск различных вариантов записи метрик
+                patterns = [
+                    # Ожидаемая доходность
+                    (r'[Оо]жидаемая\s+доходность.*?(\d+\.?\d*)%', 'expected_return'),
+                    (r'[Дд]оходность.*?(\d+\.?\d*)%', 'expected_return'),
+                    (r'Expected\s+[Rr]eturn.*?(\d+\.?\d*)%', 'expected_return'),
+                    
+                    # Риск (стандартное отклонение)
+                    (r'[Рр]иск.*?(\d+\.?\d*)%', 'risk'),
+                    (r'[Сс]тандартное\s+отклонение.*?(\d+\.?\d*)%', 'risk'),
+                    (r'Risk.*?(\d+\.?\d*)%', 'risk'),
+                    (r'Standard\s+[Dd]eviation.*?(\d+\.?\d*)%', 'risk'),
+                    
+                    # Коэффициент Шарпа - улучшенные паттерны
+                    (r'[Кк]оэффициент\s+[Шш]арпа[:\s]*(\d+\.?\d*)', 'sharpe_ratio'),
+                    (r'Sharpe[:\s]*(\d+\.?\d*)', 'sharpe_ratio'),
+                    (r'[Шш]арп[:\s]*(\d+\.?\d*)', 'sharpe_ratio'),
+                    # Добавляем поиск в строке вида "- Коэффициент Шарпа: 1.81"
+                    (r'-\s*[Кк]оэффициент\s+[Шш]арпа[:\s]*(\d+\.?\d*)', 'sharpe_ratio'),
+                    # Поиск после двоеточия
+                    (r'[Шш]арпа[:\s]+(\d+\.?\d*)', 'sharpe_ratio'),
+                ]
+                
+                for pattern, metric_name in patterns:
+                    matches = re.findall(pattern, text, re.IGNORECASE)
+                    if matches:
+                        try:
+                            # Берем последнее найденное значение (наиболее релевантное)
+                            value = float(matches[-1])
+                            metrics[metric_name] = value
+                            logger.debug(f"Found {metric_name}: {value} using pattern: {pattern}")
+                        except ValueError:
+                            continue
+                
+                logger.info(f"Extracted portfolio metrics: {metrics}")
+                return metrics
+                
+            except Exception as e:
+                logger.error(f"Error extracting portfolio metrics from text: {e}")
+                return {}
+        
+        def _find_portfolio_info_in_history() -> Dict[str, Any]:
+            """Ищет информацию о портфеле в истории диалога пользователя."""
+            portfolio_info = {}
+            
+            try:
+                # Получаем историю диалога
+                dialog_memory = state.get('dialog_memory', [])
+                
+                # Ищем в истории диалога информацию о портфеле
+                for msg in reversed(dialog_memory):
+                    if msg.get("role") == "assistant":
+                        content = msg.get("content", "")
+                        
+                        # Извлекаем веса если их еще нет
+                        if not portfolio_info.get('weights'):
+                            weights = _extract_weights_from_text(content)
+                            if weights:
+                                portfolio_info['weights'] = weights
+                                logger.info(f"Found portfolio weights in history: {len(weights)} tickers")
+                        
+                        # Извлекаем метрики портфеля
+                        if not portfolio_info.get('metrics'):
+                            metrics = _extract_portfolio_metrics_from_text(content)
+                            if metrics:
+                                portfolio_info['metrics'] = metrics
+                                logger.info(f"Found portfolio metrics in history: {list(metrics.keys())}")
+                        
+                        # Если нашли и веса и метрики, можем остановиться
+                        if portfolio_info.get('weights') and portfolio_info.get('metrics'):
+                            break
+                
+                return portfolio_info
+                
+            except Exception as e:
+                logger.error(f"Error finding portfolio info in history: {e}")
+                return {}
+        
         for turn in range(max_turns):
             # Вызываем модель OpenAI
             response = client.chat.completions.create(
@@ -1157,6 +1309,8 @@ def _run_portfolio_manager_sync(text: str, state: Dict[str, Any], user_id: int =
                         weights = tool_args.get("weights")  # Используем .get() вместо прямого доступа
                         budget = tool_args.get("budget", budget)
                         tool_result = update_portfolio(weights, budget)
+                    elif tool_name == "get_portfolio_metrics":
+                        tool_result = get_portfolio_metrics()
                     
                     # Добавляем результат инструмента в историю
                     messages.append({

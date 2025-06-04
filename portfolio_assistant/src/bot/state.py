@@ -306,17 +306,50 @@ def save_portfolio_snapshot(user_id: int, snapshot_name: str = None) -> bool:
 
 def get_portfolio_history(user_id: int) -> List[Dict[str, Any]]:
     """
-    Получает историю портфеля пользователя.
+    Получает историю портфельных позиций пользователя.
     
     Args:
         user_id: ID пользователя в Telegram
         
     Returns:
-        Список снимков портфеля
+        Список снапшотов портфеля
     """
     try:
         state = get_user_state(user_id)
         return state.get("portfolio_history", [])
     except Exception as e:
         logger.error(f"Error getting portfolio history: {str(e)}")
+        return []
+
+def get_all_user_ids() -> List[int]:
+    """
+    Получает список всех пользователей из Redis.
+    
+    Returns:
+        Список ID всех пользователей
+    """
+    if not redis_client:
+        logger.warning("Redis client not available. Returning empty list.")
+        return []
+    
+    try:
+        # Получаем все ключи с префиксом пользователей
+        user_keys = redis_client.keys(f"{USER_STATE_PREFIX}*")
+        user_ids = []
+        
+        for key in user_keys:
+            # Преобразуем bytes в str если необходимо
+            key_str = key.decode('utf-8') if isinstance(key, bytes) else key
+            # Извлекаем user_id из ключа
+            user_id_str = key_str.replace(USER_STATE_PREFIX, "")
+            try:
+                user_id = int(user_id_str)
+                user_ids.append(user_id)
+            except ValueError:
+                logger.warning(f"Invalid user ID in key: {key_str}")
+                continue
+        
+        return sorted(user_ids)
+    except Exception as e:
+        logger.error(f"Error getting all user IDs: {str(e)}")
         return [] 

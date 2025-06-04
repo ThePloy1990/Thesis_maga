@@ -162,8 +162,13 @@ def optimize_tool(
                         # Обрабатываем MultiIndex формат
                         try:
                             close_prices = ticker_data.xs('Close', level=0, axis=1)
-                            if isinstance(close_prices, pd.Series):
-                                close_prices = pd.DataFrame(close_prices)
+                            # Если получили DataFrame с одной колонкой, преобразуем в Series
+                            if isinstance(close_prices, pd.DataFrame):
+                                if close_prices.shape[1] == 1:
+                                    close_prices = close_prices.iloc[:, 0]
+                                else:
+                                    # Если несколько колонок, берем первую (основной тикер)
+                                    close_prices = close_prices.iloc[:, 0]
                         except Exception as e:
                             logger.error(f"Error accessing MultiIndex data for {ticker}: {e}")
                             continue
@@ -178,8 +183,24 @@ def optimize_tool(
                                 continue
                         close_prices = ticker_data[close_column]
                     
+                    # Убеждаемся что close_prices это Series
+                    if isinstance(close_prices, pd.DataFrame):
+                        if close_prices.shape[1] == 1:
+                            close_prices = close_prices.iloc[:, 0]
+                        else:
+                            logger.warning(f"Multiple price columns for {ticker}, taking first")
+                            close_prices = close_prices.iloc[:, 0]
+                    
                     # Получаем ежедневные логарифмические доходности
                     log_returns = np.log(close_prices / close_prices.shift(1)).dropna()
+                    
+                    # Убеждаемся что log_returns это Series
+                    if isinstance(log_returns, pd.DataFrame):
+                        if log_returns.shape[1] == 1:
+                            log_returns = log_returns.iloc[:, 0]
+                        else:
+                            logger.warning(f"Multiple return columns for {ticker}, taking first")
+                            log_returns = log_returns.iloc[:, 0]
                     
                     if len(log_returns) < 50:  # Минимум данных для HRP
                         logger.warning(f"Insufficient data for {ticker}: {len(log_returns)} days")

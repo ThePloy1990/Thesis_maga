@@ -98,6 +98,14 @@ def performance_tool(
         benchmark_data = yf.download(benchmark, start=start_date, end=end_date, interval="3mo")["Close"]
         benchmark_returns = benchmark_data.pct_change().dropna()
         
+        # Убеждаемся что benchmark_returns это Series
+        if isinstance(benchmark_returns, pd.DataFrame):
+            if benchmark_returns.shape[1] == 1:
+                benchmark_returns = benchmark_returns.iloc[:, 0]
+            else:
+                logger.warning("Multiple benchmark columns, taking first")
+                benchmark_returns = benchmark_returns.iloc[:, 0]
+        
         # Совмещаем данные портфеля и бенчмарка
         combined_data = pd.DataFrame({
             "portfolio": portfolio_returns,
@@ -127,10 +135,24 @@ def performance_tool(
         X = sm.add_constant(combined_data["benchmark"])  # Добавляем константу для регрессии
         y = combined_data["portfolio"]
         
-        model = sm.OLS(y, X).fit()
-        beta = model.params["benchmark"]
-        alpha_quarterly = model.params["const"]
-        alpha_annualized = alpha_quarterly * 4  # Годовая Alpha
+        # Убеждаемся что y и X имеют правильную размерность (1D)
+        if isinstance(y, pd.DataFrame):
+            y = y.iloc[:, 0] if y.shape[1] == 1 else y.squeeze()
+        if isinstance(X, pd.DataFrame) and X.shape[0] == 1:
+            # Если X имеет только одну строку, не можем выполнить регрессию
+            logger.warning("Insufficient data points for regression analysis")
+            beta = 1.0  # Дефолтная бета
+            alpha_annualized = 0.0  # Дефолтная альфа
+        else:
+            try:
+                model = sm.OLS(y, X).fit()
+                beta = float(model.params["benchmark"])
+                alpha_quarterly = float(model.params["const"])
+                alpha_annualized = alpha_quarterly * 4  # Годовая Alpha
+            except Exception as e:
+                logger.warning(f"Error in CAPM regression: {e}. Using default values.")
+                beta = 1.0
+                alpha_annualized = 0.0
         
         # 5. Максимальная просадка
         cumulative_returns = (1 + combined_data["portfolio"]).cumprod()
