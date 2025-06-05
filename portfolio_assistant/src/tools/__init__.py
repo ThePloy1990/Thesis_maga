@@ -30,27 +30,8 @@ from .scenario_tool import scenario_adjust_tool
 from .sentiment_tool import sentiment_tool
 from .index_composition_tool import index_composition_tool, list_available_indices, INDEX_COMPOSITIONS
 
-# Утилитарная функция для получения доступных тикеров (централизованная)
-def get_available_tickers() -> List[str]:
-    """
-    Получает список доступных тикеров на основе наличия моделей CatBoost.
-    Централизованная версия функции для всего модуля tools.
-    """
-    models_path = Path(__file__).absolute().parent.parent.parent.parent / "models"
-    available_tickers = []
-    
-    try:
-        for model_file in models_path.glob("catboost_*.cbm"):
-            ticker = model_file.stem.replace("catboost_", "")
-            if ticker and ticker.upper() not in ["TEST", "DUMMY"]:  # Исключаем тестовые модели
-                available_tickers.append(ticker)
-        
-        logger.info(f"Found {len(available_tickers)} available ticker models")
-        return sorted(available_tickers)  # Возвращаем отсортированный список
-        
-    except Exception as e:
-        logger.error(f"Error scanning for available tickers: {e}")
-        return []
+# Импортируем утилиты
+from .utils import get_available_tickers
 
 # Реестр всех доступных инструментов
 TOOLS_REGISTRY: Dict[str, Dict[str, Any]] = {

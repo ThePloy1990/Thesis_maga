@@ -1,5 +1,6 @@
 import hashlib
 import json
+import logging
 from datetime import datetime, timezone
 from typing import Dict, List, Any
 from pathlib import Path
@@ -8,6 +9,8 @@ from pydantic import Field, BaseModel, ValidationError
 
 from ..market_snapshot.model import MarketSnapshot, SnapshotMeta
 from ..market_snapshot.registry import SnapshotRegistry
+
+logger = logging.getLogger(__name__)
 
 # Pydantic модель для одной корректировки тикера
 class TickerAdjustment(BaseModel):
@@ -58,7 +61,7 @@ def _internal_scenario_adjust_tool_logic(snapshot_id: str, deltas_json_string: s
 
     for item in processed_adjustments:
         if item.ticker in deltas:
-            print(f"Warning: Duplicate ticker '{item.ticker}' in adjustments list. Using the latest value: {item.delta}")
+            logger.warning(f"Warning: Duplicate ticker '{item.ticker}' in adjustments list. Using the latest value: {item.delta}")
         deltas[item.ticker] = item.delta
     
     new_mu = original_snapshot.mu.copy()
@@ -66,7 +69,7 @@ def _internal_scenario_adjust_tool_logic(snapshot_id: str, deltas_json_string: s
         if ticker in new_mu:
             new_mu[ticker] += delta_value
         else:
-            print(f"Warning: Ticker '{ticker}' in deltas not found in original snapshot's mu. Adjustment for this ticker will be skipped.")
+            logger.warning(f"Warning: Ticker '{ticker}' in deltas not found in original snapshot's mu. Adjustment for this ticker will be skipped.")
 
     deltas_repr = json.dumps(deltas, sort_keys=True)
     scenario_suffix = f"scn-{_generate_short_hash(deltas_repr)}"
