@@ -98,7 +98,7 @@ def _calculate_sentiment_score(headlines: List[str]) -> float:
         return 0.0
 
     tokenizer, model = _get_tokenizer_model()
-    if tokenizer is None or model is None: # <--- ВОТ ОНА!
+    if tokenizer is None or model is None:
         logger.error("Sentiment model not available. Cannot calculate score.")
         return 0.0
 

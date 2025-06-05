@@ -11,17 +11,21 @@ import seaborn as sns
 
 logger = logging.getLogger(__name__)
 
+# Импортируем централизованную функцию вместо дублирования
 def get_available_tickers() -> List[str]:
     """Получает список доступных тикеров на основе наличия моделей CatBoost."""
     models_path = Path(__file__).absolute().parent.parent.parent.parent / "models"
     available_tickers = []
     
-    for model_file in models_path.glob("catboost_*.cbm"):
-        ticker = model_file.stem.replace("catboost_", "")
-        if ticker:
-            available_tickers.append(ticker)
-    
-    return available_tickers
+    try:
+        for model_file in models_path.glob("catboost_*.cbm"):
+            ticker = model_file.stem.replace("catboost_", "")
+            if ticker and ticker.upper() not in ["TEST", "DUMMY"]:
+                available_tickers.append(ticker)
+        return sorted(available_tickers)
+    except Exception as e:
+        logger.error(f"Error scanning for available tickers: {e}")
+        return []
 
 def correlation_tool(
     tickers: List[str] = None,
