@@ -7,15 +7,8 @@ import numpy as np
 from pypfopt import EfficientFrontier, BlackLittermanModel, expected_returns, risk_models
 from pypfopt.hierarchical_portfolio import HRPOpt
 
-# Исправляем импорт для работы со Streamlit
-try:
-    from ..market_snapshot.registry import SnapshotRegistry
-except ImportError:
-    # Альтернативный импорт для Streamlit
-    import sys
-    import os
-    sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'market_snapshot'))
-    from registry import SnapshotRegistry
+# Правильные относительные импорты
+from ..market_snapshot.registry import SnapshotRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -492,7 +485,9 @@ if __name__ == '__main__':
             logger.error(f"Markowitz Error: {result_markowitz['error']}")
         else:
             logger.info(f"Markowitz Result: {result_markowitz}")
-            assert sum(result_markowitz['weights'].values()) == pytest.approx(1.0, abs=1e-5)
+            # Проверка суммы весов (должна быть примерно 1.0)
+            weights_sum = sum(result_markowitz['weights'].values())
+            assert abs(weights_sum - 1.0) < 1e-5, f"Weights sum should be ~1.0, got {weights_sum}"
             assert max(result_markowitz['weights'].values()) <= 0.5
 
         # Test Black-Litterman
@@ -502,7 +497,9 @@ if __name__ == '__main__':
             logger.error(f"Black-Litterman Error: {result_bl['error']}")
         else:
             logger.info(f"Black-Litterman Result: {result_bl}")
-            assert sum(result_bl['weights'].values()) == pytest.approx(1.0, abs=1e-5)
+            # Проверка суммы весов (должна быть примерно 1.0)
+            bl_weights_sum = sum(result_bl['weights'].values())
+            assert abs(bl_weights_sum - 1.0) < 1e-5, f"BL weights sum should be ~1.0, got {bl_weights_sum}"
             assert max(result_bl['weights'].values()) <= 0.35
             
     except ConnectionRefusedError:

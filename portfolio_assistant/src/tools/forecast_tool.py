@@ -9,17 +9,9 @@ import numpy as np
 import pandas_ta as ta
 from catboost import CatBoostRegressor
 
-# Исправляем импорты для работы со Streamlit
-try:
-    from ..market_snapshot.registry import SnapshotRegistry
-    from ..market_snapshot.model import MarketSnapshot
-except ImportError:
-    # Альтернативный импорт для Streamlit
-    import sys
-    import os
-    sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'market_snapshot'))
-    from registry import SnapshotRegistry
-    from model import MarketSnapshot
+# Правильные относительные импорты
+from ..market_snapshot.registry import SnapshotRegistry
+from ..market_snapshot.model import MarketSnapshot
 
 logger = logging.getLogger(__name__)
 

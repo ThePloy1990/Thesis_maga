@@ -2,6 +2,9 @@ import logging
 from typing import Dict, List, Any
 from pathlib import Path
 
+# Импортируем централизованную функцию
+from .utils import get_available_tickers
+
 logger = logging.getLogger(__name__)
 
 # Определения составов популярных индексов (топ компаний)
@@ -19,18 +22,6 @@ INDEX_COMPOSITIONS = {
     "healthcare_sector": ["UNH", "JNJ", "PFE", "ABBV", "TMO", "ABT", "LLY", "MRK", "BMY", "AMGN"],
     "consumer_staples": ["PG", "KO", "PEP", "WMT", "COST", "CL", "MO", "MDLZ", "KMB", "GIS"]
 }
-
-def get_available_tickers() -> List[str]:
-    """Получает список доступных тикеров на основе наличия моделей CatBoost."""
-    models_path = Path(__file__).absolute().parent.parent.parent.parent / "models"
-    available_tickers = []
-    
-    for model_file in models_path.glob("catboost_*.cbm"):
-        ticker = model_file.stem.replace("catboost_", "")
-        if ticker:
-            available_tickers.append(ticker)
-    
-    return available_tickers
 
 def index_composition_tool(
     index_name: str,

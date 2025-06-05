@@ -8,19 +8,10 @@ import matplotlib.pyplot as plt
 from pypfopt import EfficientFrontier, risk_models, expected_returns
 from pypfopt.plotting import plot_efficient_frontier
 
-logger = logging.getLogger(__name__)
+# Импортируем централизованную функцию
+from .utils import get_available_tickers
 
-def get_available_tickers() -> List[str]:
-    """Получает список доступных тикеров на основе наличия моделей CatBoost."""
-    models_path = Path(__file__).absolute().parent.parent.parent.parent / "models"
-    available_tickers = []
-    
-    for model_file in models_path.glob("catboost_*.cbm"):
-        ticker = model_file.stem.replace("catboost_", "")
-        if ticker:
-            available_tickers.append(ticker)
-    
-    return available_tickers
+logger = logging.getLogger(__name__)
 
 def efficient_frontier_tool(
     tickers: List[str] = None,
